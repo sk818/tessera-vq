@@ -1,0 +1,157 @@
+# Tessera VQ — runtime configuration
+#
+# All paths and parameters live here. Scripts read from this file; nothing
+# is hard-coded. Replace every <FILL IN> placeholder before running Phase 1.
+#
+# Edits to this file should be committed with a clear message:
+#   `config: <what changed> for <reason>`
+
+# -----------------------------------------------------------------------------
+# Data paths
+# -----------------------------------------------------------------------------
+paths:
+  # Root of the Tessera embedding store. Either a local filesystem path or an
+  # s3://, gs://, or azure:// URI. Loaders in tessera_vq.data must handle both.
+  tessera_embeddings_root: "<FILL IN>"
+
+  # Path to Frank Feng's evaluation harness (cloned locally). Used to align
+  # split definitions and probe protocols for PASTIS / TreeSatAI / Borneo.
+  frank_eval_repo: "<FILL IN>"
+
+  # Biome layer for Pool A stratification. Suggest ESA WorldCover 10 m global
+  # raster, but any per-pixel biome label works.
+  biome_layer_path: "<FILL IN>"
+
+  # Where to write intermediate Parquet outputs.
+  results_dir: "results"
+
+  # Where to write figures.
+  figures_dir: "figures"
+
+  # Where to write text logs.
+  logs_dir: "logs"
+
+# -----------------------------------------------------------------------------
+# Pool A — encoder diagnostics, never used for downstream eval
+# -----------------------------------------------------------------------------
+pool_a:
+  n_tiles: 1000
+  tile_degrees: 0.1
+  biome_strata:
+    - tropical_forest
+    - temperate_forest
+    - cropland
+    - grassland
+    - ice_desert
+  # Sampling: if true, exactly 200 tiles per stratum; if false, weighted by
+  # stratum area on Earth's land surface.
+  equal_stratum: true
+
+# -----------------------------------------------------------------------------
+# Parameter grid
+# -----------------------------------------------------------------------------
+grid:
+  tile_sizes: [16, 64, 256]
+  k_values: [2, 4, 8, 16, 32, 64, 128, 256]
+  # Tested at k=16 and k=64 only; the winner is propagated to the rest.
+  # See Phase 3 in docs/spec.md.
+  clustering_distance_candidates: [euclidean, cosine]
+  # Filled in by Phase 3 task 4 after the head-to-head; do not set manually.
+  clustering_distance_chosen: null
+
+# -----------------------------------------------------------------------------
+# Downstream tasks
+# -----------------------------------------------------------------------------
+tasks:
+  pastis:
+    root: "<FILL IN>"
+    split_protocol: frank_default       # uses Frank's harness
+    metric: macro_f1
+    task_type: classification
+  treesatai:
+    root: "<FILL IN>"
+    split_protocol: frank_default
+    metric: macro_f1
+    task_type: classification
+  borneo:
+    root: "<FILL IN>"
+    split_protocol: frank_default
+    metric: miou
+    task_type: classification
+  austrian_crops:
+    root: "<FILL IN>"
+    split_protocol: robinson_corley     # logistic regression with C tuned on val
+    metric: macro_f1
+    task_type: classification
+  haweswater:
+    root: "<FILL IN>"
+    split_protocol: robinson_corley
+    metric: macro_f1
+    task_type: classification
+
+# -----------------------------------------------------------------------------
+# Compute
+# -----------------------------------------------------------------------------
+compute:
+  n_jobs: -1                            # joblib parallelism
+  max_wall_hours_per_phase: 8
+  use_gpu: false                        # set true if Frank's protocol needs it
+  device: "cpu"                         # or "cuda:0"
+
+# -----------------------------------------------------------------------------
+# Seeds
+# -----------------------------------------------------------------------------
+seeds:
+  global: 42
+  pool_a_sampling: 42
+  random_projections: 43
+  kmeans: 44
+  probe_training: 45
+
+# -----------------------------------------------------------------------------
+# Phase 1 — isotropy diagnostics
+# -----------------------------------------------------------------------------
+phase1:
+  n_embeddings: 10000
+  n_directions: 200
+  alpha: 0.01
+  near_collapsed_variance_ratio: 0.01   # flag dims with var < this × median
+
+# -----------------------------------------------------------------------------
+# Phase 2 — reconstruction sweep
+# -----------------------------------------------------------------------------
+phase2:
+  wasserstein_n_projections: 200
+  quantiles: [0.1, 0.5, 0.9, 0.99]
+  target_cosine_p95: 0.1
+  target_l2_p95: null                   # set after Phase 1 if Tessera is Gaussian
+
+# -----------------------------------------------------------------------------
+# Phase 3 — index compression
+# -----------------------------------------------------------------------------
+phase3:
+  zstd_level: 19
+  pipelines: [A, B, C, D, E, F, G]      # see spec for definitions
+
+# -----------------------------------------------------------------------------
+# Phase 4 — downstream probes
+# -----------------------------------------------------------------------------
+phase4:
+  probe_C_grid: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+  configs:
+    - raw_float32
+    - int8
+    - pca32_int8
+    - binary
+    - vq_k16
+    - vq_k64
+    - vq_k256
+    - pca32_vq_k16
+
+# -----------------------------------------------------------------------------
+# GitHub
+# -----------------------------------------------------------------------------
+github:
+  org: "sk818"                          # personal GitHub account
+  repo: "tessera-vq"
+  visibility: private                   # never change without supervisor approval
