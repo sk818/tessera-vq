@@ -10,9 +10,8 @@
 # Data paths
 # -----------------------------------------------------------------------------
 paths:
-  # Root of the Tessera embedding store. Either a local filesystem path or an
-  # s3://, gs://, or azure:// URI. Loaders in tessera_vq.data must handle both.
-  tessera_embeddings_root: "<FILL IN>"
+  # NOTE: Tessera embeddings are NOT addressed by a path/URI here. They are fetched
+  # via the geotessera package; see the `tessera:` section below.
 
   # Path to Frank Feng's evaluation harness (cloned locally). Used to align
   # split definitions and probe protocols for PASTIS / TreeSatAI / Borneo.
@@ -30,6 +29,25 @@ paths:
 
   # Where to write text logs.
   logs_dir: "logs"
+
+# -----------------------------------------------------------------------------
+# Tessera embeddings — accessed via the geotessera package, not s3/gs/azure.
+# https://github.com/ucam-eo/geotessera  (requires Python >= 3.12)
+# -----------------------------------------------------------------------------
+tessera:
+  source: geotessera
+  # Default embedding year for Pool A diagnostics and any downstream task that
+  # does not set its own `year`.
+  year: 2024
+  # Local cache for the geotessera registry + downloaded tiles. null -> package
+  # default (~/.cache/geotessera). Embeddings are read-only; never modified.
+  cache_dir: null
+  # Pin for reproducibility; null -> geotessera's default remote/version. The
+  # resolved registry version is recorded in output provenance.
+  registry_url: null
+  registry_version: null
+  # SHA256-verify downloaded files (geotessera default). Keep true.
+  verify_hashes: true
 
 # -----------------------------------------------------------------------------
 # Pool A — encoder diagnostics, never used for downstream eval
@@ -61,30 +79,39 @@ grid:
 
 # -----------------------------------------------------------------------------
 # Downstream tasks
+#
+# Embeddings for each task are fetched from geotessera (see `tessera:` above)
+# using the task's geographic extent and `year`; only splits/labels come from
+# `root` + `split_protocol`. `year: null` falls back to `tessera.year`.
 # -----------------------------------------------------------------------------
 tasks:
   pastis:
-    root: "<FILL IN>"
+    root: "<FILL IN>"                   # label/geometry dataset; splits via frank harness
+    year: null
     split_protocol: frank_default       # uses Frank's harness
     metric: macro_f1
     task_type: classification
   treesatai:
     root: "<FILL IN>"
+    year: null
     split_protocol: frank_default
     metric: macro_f1
     task_type: classification
   borneo:
     root: "<FILL IN>"
+    year: null
     split_protocol: frank_default
     metric: miou
     task_type: classification
   austrian_crops:
     root: "<FILL IN>"
+    year: null
     split_protocol: robinson_corley     # logistic regression with C tuned on val
     metric: macro_f1
     task_type: classification
   haweswater:
     root: "<FILL IN>"
+    year: null
     split_protocol: robinson_corley
     metric: macro_f1
     task_type: classification
