@@ -13,8 +13,9 @@ paths:
   # NOTE: Tessera embeddings are NOT addressed by a path/URI here. They are fetched
   # via the geotessera package; see the `tessera:` section below.
 
-  # Path to Frank Feng's evaluation harness (cloned locally). Used to align
-  # split definitions and probe protocols for PASTIS / TreeSatAI / Borneo.
+  # DEFERRED / out of current scope: needed only for the downstream phases
+  # (Phases 5-6), which are NOT part of the current diagnostics + reconstruction
+  # study. Path to Frank Feng's evaluation harness; aligns splits/probe protocols.
   frank_eval_repo: "<FILL IN>"
 
   # Where to write intermediate Parquet outputs.
@@ -63,8 +64,9 @@ pool_a:
   window_px: 1024                  # ~0.1 deg box; single zarr read (region < 0.2 deg)
   subtiles_per_window: 16          # random sub-tiles evaluated per tile size, per window
   max_nan_fraction: 0.5            # drop NaN (water/nodata) pixels; re-sample window if exceeded
-  # Isotropy points (Phase 2) are scattered single land pixels; count lives in
-  # phase1.n_embeddings.
+  # Isotropy (Phase 2): collect this many random land pixels per window in the
+  # SAME streaming pass; total = n_windows x isotropy_points_per_window (= phase1.n_embeddings).
+  isotropy_points_per_window: 100
 
 # -----------------------------------------------------------------------------
 # Parameter grid
@@ -88,11 +90,12 @@ heterogeneity:
   n_bins: 5                  # quantile bins for the per-regime breakdown
 
 # -----------------------------------------------------------------------------
-# Downstream tasks
+# Downstream tasks — DEFERRED (Phases 5-6), out of the current scope.
 #
-# Embeddings for each task are fetched from geotessera (see `tessera:` above)
-# using the task's geographic extent and `year`; only splits/labels come from
-# `root` + `split_protocol`. `year: null` falls back to `tessera.year`.
+# The current study (metric, tile size, k) is independent of downstream tasks and
+# needs neither these nor `frank_eval_repo`. Kept for when downstream resumes:
+# embeddings fetched from geotessera by region/year; splits/labels from
+# `root` + `split_protocol`; `year: null` falls back to `tessera.year`.
 # -----------------------------------------------------------------------------
 tasks:
   pastis:
@@ -149,7 +152,9 @@ seeds:
 # Phase 1 — isotropy diagnostics
 # -----------------------------------------------------------------------------
 phase1:
-  n_embeddings: 10000
+  # 100 land points per window x pool_a.n_windows = 100,000 points, collected in
+  # the same streaming pass as the reconstruction sweep.
+  n_embeddings: 100000
   n_directions: 200
   alpha: 0.01
   near_collapsed_variance_ratio: 0.01   # flag dims with var < this × median

@@ -120,15 +120,17 @@ This spec is the work plan. Stable conventions (style, git workflow, things neve
 
 ## 2. Phase 1 — Data loaders and smoke tests
 
-**Inputs:** populated `config.yaml` with real paths.
+> **Current scope (per supervisor):** a downstream-independent diagnostic study — choose the distance metric (cosine vs L2) from isotropy, and tile size + k from reconstruction. The downstream phases (5–6) and `frank_eval_repo` are **deferred / out of scope**; do not implement `load_downstream` yet. Isotropy uses 100 land points per window × `pool_a.n_windows` = 100K points, collected in the same streaming pass as the reconstruction sweep.
+
+**Inputs:** populated `config.yaml` (geotessera-backed; no `frank_eval_repo` needed for this scope).
 
 ### Tasks
 
 1. Vendor `zarr_utils` from `ucam-eo/tee` (MIT) into `tessera_vq/zarr_utils.py` (attribute the source). Implement `tessera_vq/data.py` over geotessera, gated on zarr coverage with a bounding-box fallback (never skip):
    - `read_window(bounds, year) -> np.ndarray` — `(H, W, 128)` float32 in EPSG:4326. Probe `zarr_utils.probe_zarr_coverage`; if covered use `zarr_utils.read_region_chunked`, else fall back to `gt.fetch_mosaic_for_region(bbox, year, target_crs="EPSG:4326")`.
    - `iter_pool_a_windows(n_windows: int = 1000, window_px: int = 1024, year: int = 2024, seed: int = 42) -> Iterator[np.ndarray]` — yields land windows (locations drawn from `registry.get_available_embeddings`); embeddings never persisted.
-   - `sample_isotropy_points(n: int = 10000, year: int = 2024, seed: int = 42) -> np.ndarray` — `(n, 128)` float32 scattered random **land** pixels (zarr `sample_at`, else `gt.sample_embeddings_at_points`).
-   - `load_downstream(task: Literal["pastis", "treesatai", "borneo", "austrian_crops", "haweswater"]) -> tuple[X_train, y_train, X_val, y_val, X_test, y_test]` — embeddings from geotessera by the task's region/year; splits/labels from `root` + `split_protocol` (Frank's harness at `config.yaml::paths.frank_eval_repo`). **CHECK WITH SUPERVISOR** for each task before implementing.
+   - `sample_isotropy_points(points_per_window: int = 100, n_windows: int = 1000, year: int = 2024, seed: int = 42) -> np.ndarray` — `(points_per_window * n_windows, 128)` float32, i.e. 100K random **land** pixels (100 per window), collected from the same windows as the reconstruction sweep (zarr `sample_at`, else `gt.sample_embeddings_at_points`).
+   - `load_downstream(...)` — **DEFERRED** (Phases 5–6, out of current scope); do not implement yet. Will read embeddings from geotessera by the task's region/year, with splits/labels from `root` + `split_protocol`. **CHECK WITH SUPERVISOR** when downstream resumes.
 2. Write a smoke test that reads a small land window and carves sub-tiles of each size (16, 64, 256, 1024); assert dtype, shape, finite (non-NaN) values, reasonable norm.
 3. Add `tests/fixtures/` with three tiny synthetic tiles (4×4, 8×8, 16×16) and 50-dim embeddings so unit tests run without real data.
 4. Implement land-only random sampling for Pool A: draw window/point locations from `registry.get_available_embeddings` for `config.yaml::tessera.year` (coverage is land-only, so no sea), with NaN-pixel handling and `max_nan_fraction` re-sampling. No biome stratification; no external biome layer.
@@ -156,7 +158,7 @@ This spec is the work plan. Stable conventions (style, git workflow, things neve
 
 1. Implement `tessera_vq/metrics.py::epps_pulley(samples_1d, mu=0, sigma=1) -> float` and `shapiro_wilk(samples_1d) -> tuple[stat, p]`. Use `scipy.stats.shapiro` for the latter; implement Epps–Pulley from the formula (it's not in scipy). Cross-check Epps–Pulley against known-Gaussian and known-non-Gaussian samples in tests.
 2. Write `scripts/phase1_isotropy.py` (note: filename has "phase1" because it's the first analytical phase; Phase 0 is bootstrap):
-   - Draws `phase1.n_embeddings` scattered random land embeddings via `sample_isotropy_points` (zarr `sample_at`, bbox fallback).
+   - Draws `phase1.n_embeddings` (= 100 land points per window × `pool_a.n_windows` = 100K) via `sample_isotropy_points`, collected in the same streaming pass as the reconstruction sweep.
    - Standardises per-dimension using Pool A statistics (saved to `results/pool_a_stats.parquet`).
    - Samples 200 random unit-norm directions in ℝ¹²⁸.
    - For each direction, computes Shapiro–Wilk p-value and Epps–Pulley statistic.
@@ -228,7 +230,7 @@ Wait for the supervisor's metric decision before Phase 3.
 - Cosine and L2 monotonically non-increasing in k.
 - Compression ratios at k ∈ {16, 64, 256} match back-of-envelope numbers within 5%.
 
-### **HALT** — report all three plots and the distance-metric winner. Update `config.yaml::grid.clustering_distance_chosen`.
+### **HALT** — report all three plots, the distance-metric winner, and the recommended tile size + k (per tile size) — all from reconstruction alone, independent of downstream. Update `config.yaml::grid.clustering_distance_chosen`.
 
 ---
 
@@ -278,6 +280,8 @@ Wait for the supervisor's metric decision before Phase 3.
 
 ## 6. Phase 5 — Downstream linear probes
 
+> **DEFERRED / out of current scope.** Requires Frank's evaluation harness (`frank_eval_repo`) and the downstream task data. Not part of the current diagnostics + reconstruction study; resume only on supervisor instruction.
+
 **Inputs:** Phase 4 complete. Frank's evaluation harness paths confirmed.
 
 ### Tasks
@@ -309,6 +313,8 @@ Wait for the supervisor's metric decision before Phase 3.
 ---
 
 ## 7. Phase 6 — Pareto plots, per-class failure modes, writeup stubs
+
+> **DEFERRED / out of current scope** (depends on the downstream results from Phase 5).
 
 **Inputs:** Phases 1–5 complete.
 
