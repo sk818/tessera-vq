@@ -17,10 +17,6 @@ paths:
   # split definitions and probe protocols for PASTIS / TreeSatAI / Borneo.
   frank_eval_repo: "<FILL IN>"
 
-  # Biome layer for Pool A stratification. Suggest ESA WorldCover 10 m global
-  # raster, but any per-pixel biome label works.
-  biome_layer_path: "<FILL IN>"
-
   # Where to write intermediate Parquet outputs.
   results_dir: "results"
 
@@ -39,43 +35,57 @@ tessera:
   # Default embedding year for Pool A diagnostics and any downstream task that
   # does not set its own `year`.
   year: 2024
-  # Local cache for the geotessera registry + downloaded tiles. null -> package
-  # default (~/.cache/geotessera). Embeddings are read-only; never modified.
-  cache_dir: null
-  # Pin for reproducibility; null -> geotessera's default remote/version. The
-  # resolved registry version is recorded in output provenance.
-  registry_url: null
-  registry_version: null
-  # SHA256-verify downloaded files (geotessera default). Keep true.
-  verify_hashes: true
+  # Read path. PRIMARY: geotessera's cloud-native zarr store (GeoTesseraZarr),
+  # reached through zarr_utils vendored from ucam-eo/tee, via ranged reads (no
+  # whole-tile download). Zarr is NOT globally available, so coverage is probed
+  # per location (zarr_utils.probe_zarr_coverage). FALLBACK (not skip): where
+  # zarr has no data, read via geotessera's bounding-box API
+  # (gt.fetch_mosaic_for_region; gt.sample_embeddings_at_points for points).
+  # Both paths return (H, W, 128) float32 in EPSG:4326 with NaN nodata.
+  # Embeddings are never persisted to disk.
+  access: zarr_then_bbox
+  zarr_url: "https://dl2.geotessera.org/zarr/v2/store.zarr"  # recorded for provenance
+  cache_dir: null   # geotessera local cache; null -> ~/.cache/geotessera
 
 # -----------------------------------------------------------------------------
 # Pool A — encoder diagnostics, never used for downstream eval
+#
+# Land only: window/point locations are drawn from geotessera's available
+# coverage (registry.get_available_embeddings) for tessera.year, which exists
+# only on land — so no sea samples. No biome stratification. Nothing is
+# persisted: isotropy points and each window are read, used, and discarded.
 # -----------------------------------------------------------------------------
 pool_a:
-  n_tiles: 1000
-  tile_degrees: 0.1
-  biome_strata:
-    - tropical_forest
-    - temperate_forest
-    - cropland
-    - grassland
-    - ice_desert
-  # Sampling: if true, exactly 200 tiles per stratum; if false, weighted by
-  # stratum area on Earth's land surface.
-  equal_stratum: true
+  sampling: random_land            # locations drawn from geotessera land coverage
+  # Reconstruction/compression sweeps (Phases 3-4): contiguous windows read one
+  # at a time; VQ effectiveness computed in memory, then the window is discarded.
+  n_windows: 1000
+  window_px: 1024                  # ~0.1 deg box; single zarr read (region < 0.2 deg)
+  subtiles_per_window: 16          # random sub-tiles evaluated per tile size, per window
+  max_nan_fraction: 0.5            # drop NaN (water/nodata) pixels; re-sample window if exceeded
+  # Isotropy points (Phase 2) are scattered single land pixels; count lives in
+  # phase1.n_embeddings.
 
 # -----------------------------------------------------------------------------
 # Parameter grid
 # -----------------------------------------------------------------------------
 grid:
-  tile_sizes: [16, 64, 256]
+  tile_sizes: [16, 64, 256, 1024]   # 1024 = whole window; 16/64/256 carved from it
   k_values: [2, 4, 8, 16, 32, 64, 128, 256]
   # Tested at k=16 and k=64 only; the winner is propagated to the rest.
   # See Phase 3 in docs/spec.md.
   clustering_distance_candidates: [euclidean, cosine]
   # Filled in by Phase 3 task 4 after the head-to-head; do not set manually.
   clustering_distance_chosen: null
+
+# -----------------------------------------------------------------------------
+# Intrinsic per-tile heterogeneity (replaces biome stratification/breakdown).
+# Characterises regimes where VQ helps vs not, with no external labels.
+# -----------------------------------------------------------------------------
+heterogeneity:
+  metric: index_entropy      # one of: index_entropy, n_distinct_prototypes, embedding_spread
+  reference_k: 16            # k at which index-based heterogeneity is computed
+  n_bins: 5                  # quantile bins for the per-regime breakdown
 
 # -----------------------------------------------------------------------------
 # Downstream tasks

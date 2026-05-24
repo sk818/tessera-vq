@@ -124,26 +124,27 @@ This spec is the work plan. Stable conventions (style, git workflow, things neve
 
 ### Tasks
 
-1. Implement `tessera_vq/data.py` with three loader functions:
-   - `load_tile(tile_id: str) -> np.ndarray` — returns `(H, W, 128)` float32.
-   - `iter_pool_a(n_tiles: int = 1000, seed: int = 42, biome_strata: bool = True) -> Iterator[np.ndarray]` — yields tiles from the diagnostic pool.
-   - `load_downstream(task: Literal["pastis", "treesatai", "borneo", "austrian_crops", "haweswater"]) -> tuple[X_train, y_train, X_val, y_val, X_test, y_test]` — uses split definitions from Frank's harness at `config.yaml::paths.frank_eval_repo`. **CHECK WITH SUPERVISOR** for each task before implementing.
-2. Write a smoke test that loads one tile of each shape (16, 64, 256) and asserts dtype, shape, finite values, reasonable norm.
+1. Vendor `zarr_utils` from `ucam-eo/tee` (MIT) into `tessera_vq/zarr_utils.py` (attribute the source). Implement `tessera_vq/data.py` over geotessera, gated on zarr coverage with a bounding-box fallback (never skip):
+   - `read_window(bounds, year) -> np.ndarray` — `(H, W, 128)` float32 in EPSG:4326. Probe `zarr_utils.probe_zarr_coverage`; if covered use `zarr_utils.read_region_chunked`, else fall back to `gt.fetch_mosaic_for_region(bbox, year, target_crs="EPSG:4326")`.
+   - `iter_pool_a_windows(n_windows: int = 1000, window_px: int = 1024, year: int = 2024, seed: int = 42) -> Iterator[np.ndarray]` — yields land windows (locations drawn from `registry.get_available_embeddings`); embeddings never persisted.
+   - `sample_isotropy_points(n: int = 10000, year: int = 2024, seed: int = 42) -> np.ndarray` — `(n, 128)` float32 scattered random **land** pixels (zarr `sample_at`, else `gt.sample_embeddings_at_points`).
+   - `load_downstream(task: Literal["pastis", "treesatai", "borneo", "austrian_crops", "haweswater"]) -> tuple[X_train, y_train, X_val, y_val, X_test, y_test]` — embeddings from geotessera by the task's region/year; splits/labels from `root` + `split_protocol` (Frank's harness at `config.yaml::paths.frank_eval_repo`). **CHECK WITH SUPERVISOR** for each task before implementing.
+2. Write a smoke test that reads a small land window and carves sub-tiles of each size (16, 64, 256, 1024); assert dtype, shape, finite (non-NaN) values, reasonable norm.
 3. Add `tests/fixtures/` with three tiny synthetic tiles (4×4, 8×8, 16×16) and 50-dim embeddings so unit tests run without real data.
-4. Implement biome stratification for Pool A. **CHECK WITH SUPERVISOR** on the biome layer source.
+4. Implement land-only random sampling for Pool A: draw window/point locations from `registry.get_available_embeddings` for `config.yaml::tessera.year` (coverage is land-only, so no sea), with NaN-pixel handling and `max_nan_fraction` re-sampling. No biome stratification; no external biome layer.
 5. Implement `tessera_vq/io_utils.py::write_parquet_with_provenance` per `CLAUDE.md`.
 
 ### Outputs
 
 - `tessera_vq/data.py` working for all five downstream tasks.
-- Pool A iteration verified end-to-end on 10 tiles.
+- Pool A window iteration verified end-to-end on a few land windows (zarr and bbox-fallback paths both exercised).
 
 ### Validation
 
 - `uv run pytest tests/test_data.py` — all green.
-- `python -c "from tessera_vq.data import iter_pool_a; ts = list(iter_pool_a(n_tiles=10)); print([t.shape for t in ts])"` produces ten tiles of expected shape.
+- `python -c "from tessera_vq.data import iter_pool_a_windows; ws = list(iter_pool_a_windows(n_windows=3)); print([w.shape for w in ws])"` produces land windows of expected shape.
 
-### **HALT** — show the supervisor sample shapes, biome distribution of the 10 test tiles, confirmation that downstream loaders match Frank's expectations. Close Phase 1 issue on supervisor approval; open Phase 2.
+### **HALT** — show the supervisor sample shapes, the geographic spread of the sampled land windows (and how many used the zarr vs bbox-fallback path), confirmation that downstream loaders match Frank's expectations. Close Phase 1 issue on supervisor approval; open Phase 2.
 
 ---
 
@@ -155,7 +156,7 @@ This spec is the work plan. Stable conventions (style, git workflow, things neve
 
 1. Implement `tessera_vq/metrics.py::epps_pulley(samples_1d, mu=0, sigma=1) -> float` and `shapiro_wilk(samples_1d) -> tuple[stat, p]`. Use `scipy.stats.shapiro` for the latter; implement Epps–Pulley from the formula (it's not in scipy). Cross-check Epps–Pulley against known-Gaussian and known-non-Gaussian samples in tests.
 2. Write `scripts/phase1_isotropy.py` (note: filename has "phase1" because it's the first analytical phase; Phase 0 is bootstrap):
-   - Draws 10,000 embeddings from Pool A.
+   - Draws `phase1.n_embeddings` scattered random land embeddings via `sample_isotropy_points` (zarr `sample_at`, bbox fallback).
    - Standardises per-dimension using Pool A statistics (saved to `results/pool_a_stats.parquet`).
    - Samples 200 random unit-norm directions in ℝ¹²⁸.
    - For each direction, computes Shapiro–Wilk p-value and Epps–Pulley statistic.
@@ -203,11 +204,11 @@ Wait for the supervisor's metric decision before Phase 3.
    - For `distance="cosine"`, L2-normalise inputs before clustering.
    - Returns `codebook: (k, 128) float32`, `indices: (H, W) uint8 or uint16`.
 2. Implement `tessera_vq/metrics.py::wasserstein1_random_projections(X, Y, n_proj, seed) -> float`.
-3. Write `scripts/phase2_reconstruction.py`:
-   - Iterate over the grid: `tile_size ∈ {16, 64, 256}`, `k ∈ {2, 4, 8, 16, 32, 64, 128, 256}`.
-   - Test both distance metrics at k=16 and k=64; propagate the winner.
-   - For each (tile_size, k, distance), process 1000 tiles from Pool A: run k-means, reconstruct, compute cosine, L2 (raw and standardised), per-dim error, Wasserstein-1.
-   - Save **quantiles only** (10/50/90/99) per tile plus Wasserstein-1 to `results/phase2/reconstruction.parquet`. Per-pixel errors would balloon the file.
+3. Write `scripts/phase2_reconstruction.py` as a streaming sweep (no embeddings persisted):
+   - Stream `pool_a.n_windows` land windows of `window_px` one at a time.
+   - From each window carve up to `pool_a.subtiles_per_window` random sub-tiles per `tile_size ∈ {16, 64, 256, 1024}` (1024 = the whole window).
+   - For each sub-tile and `k ∈ {2, 4, 8, 16, 32, 64, 128, 256}` (capped at sub-tile area), run k-means, reconstruct, compute cosine, L2 (raw and standardised), per-dim error, Wasserstein-1; test both distance metrics at k=16 and k=64 and propagate the winner.
+   - Append **quantiles only** (10/50/90/99) per sub-tile plus Wasserstein-1 to `results/phase2/reconstruction.parquet`, then delete the window. Per-pixel errors would balloon the file.
 4. Notebook `02_reconstruction.ipynb`:
    - Cosine-vs-k plot (10/50/90 lines) per tile size.
    - Same for L2.
@@ -255,10 +256,10 @@ Wait for the supervisor's metric decision before Phase 3.
    | F | Z-order + RLE + zstd |
    | G | Hilbert + RLE + zstd |
 
-   Save bytes/pixel (excluding and including codebook amortisation) to `results/phase3/compression.parquet`. Include per-biome breakdown.
+   Save bytes/pixel (excluding and including codebook amortisation) to `results/phase3/compression.parquet`. Include a per-heterogeneity-bin breakdown (intrinsic per-tile heterogeneity per `config.yaml::heterogeneity`; no labels).
 5. Notebook `03_index_compression.ipynb`:
    - Bar chart: bytes/pixel by pipeline, faceted by k.
-   - Heatmap: bytes/pixel by biome × pipeline at k=16.
+   - Heatmap: bytes/pixel by heterogeneity-bin × pipeline at k=16.
 
 ### Outputs
 
@@ -269,9 +270,9 @@ Wait for the supervisor's metric decision before Phase 3.
 
 - All roundtrips bit-exact.
 - Morton and Hilbert agree with reference implementations on the fixture.
-- Single-biome forest tiles: Z-order+RLE beats raw bit-packed by ≥5×.
+- Homogeneous (lowest-heterogeneity-bin) tiles: Z-order+RLE beats raw bit-packed by ≥5×.
 
-### **HALT** — report bytes/pixel table and per-biome breakdown.
+### **HALT** — report bytes/pixel table and per-heterogeneity-bin breakdown.
 
 ---
 
