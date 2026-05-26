@@ -177,6 +177,123 @@ def quantize_window_for_serving(
     )
 
 
+def rvq_quantize_tile(
+    tile: npt.NDArray[np.float32],
+    k1: int,
+    k2: int,
+    m: Distance = "euclidean",
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> tuple[
+    npt.NDArray[np.float32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.float32],
+    npt.NDArray[np.int32],
+]:
+    """Two-stage Residual VQ on one ``(H, W, 128)`` tile.
+
+    Stage 1: k-means with ``k1`` on the tile  -> ``(codebook1, indices1)``.
+    Stage 2: k-means with ``k2`` on the residual ``tile - codebook1[indices1]``
+             -> ``(codebook2, indices2)``.
+
+    Reconstruction is ``codebook1[indices1] + codebook2[indices2]``. Stage 2 is just
+    ``fast_quantize_tile`` on the residual — if you want to sweep ``k2`` without
+    redoing stage 1, compute the residual once and call ``fast_quantize_tile`` on
+    it directly.
+
+    Only ``m="euclidean"`` is supported: cosine stage 1 quantises direction and
+    discards magnitude, so the residual in the original space is dominated by that
+    magnitude and stage 2 wouldn't be quantising anything meaningful.
+    """
+    if m != "euclidean":
+        raise NotImplementedError(
+            "rvq_quantize_tile supports m='euclidean' only (cosine RVQ would need "
+            "separate magnitude handling)."
+        )
+    centers1, indices1 = fast_quantize_tile(tile, k1, m, seed, sample_size=sample_size)
+    residual = (tile - centers1[indices1]).astype(np.float32, copy=False)
+    centers2, indices2 = fast_quantize_tile(residual, k2, m, seed + 1, sample_size=sample_size)
+    return centers1, indices1.astype(np.int32), centers2, indices2.astype(np.int32)
+
+
+def rvq_reconstruct_tile(
+    codebook1: npt.NDArray[np.float32],
+    indices1: npt.NDArray[np.integer[Any]],
+    codebook2: npt.NDArray[np.float32],
+    indices2: npt.NDArray[np.integer[Any]],
+) -> npt.NDArray[np.float32]:
+    """Reconstruct an RVQ-quantised tile as ``codebook1[idx1] + codebook2[idx2]``."""
+    return cast(
+        "npt.NDArray[np.float32]",
+        (codebook1[indices1] + codebook2[indices2]).astype(np.float32, copy=False),
+    )
+
+
+def rvq_quantize_window_for_serving(
+    window: npt.NDArray[np.float32],
+    t: int,
+    k1: int,
+    k2: int,
+    m: Distance = "euclidean",
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> tuple[
+    npt.NDArray[np.float32],
+    npt.NDArray[Any],
+    npt.NDArray[np.float32],
+    npt.NDArray[Any],
+    npt.NDArray[np.int32],
+]:
+    """Tile ``window`` into t x t blocks; run RVQ on each all-finite block.
+
+    Returns ``(codebooks1, indices1, codebooks2, indices2, positions)`` where:
+      ``codebooks{1,2}``  ``(n_tiles, k{1,2}_eff, 128)`` float32
+      ``indices{1,2}``    ``(n_tiles, t, t)`` uint8 if ``k_eff <= 256`` else uint16
+      ``positions``       ``(n_tiles, 2)`` int32 ``(row, col)`` in the bbox tile-grid.
+    """
+    h, w, c = window.shape
+    rows, cols = h // t, w // t
+    k1_eff = min(k1, t * t)
+    k2_eff = min(k2, t * t)
+    idx_dtype1: Any = np.uint8 if k1_eff <= 256 else np.uint16  # noqa: PLR2004
+    idx_dtype2: Any = np.uint8 if k2_eff <= 256 else np.uint16  # noqa: PLR2004
+    cbs1: list[npt.NDArray[np.float32]] = []
+    cbs2: list[npt.NDArray[np.float32]] = []
+    idxs1: list[npt.NDArray[Any]] = []
+    idxs2: list[npt.NDArray[Any]] = []
+    pos: list[tuple[int, int]] = []
+    for r in range(rows):
+        for col in range(cols):
+            tile = window[r * t : (r + 1) * t, col * t : (col + 1) * t]
+            if not np.isfinite(tile).all():
+                continue
+            cb1, idx1, cb2, idx2 = rvq_quantize_tile(
+                np.asarray(tile, dtype=np.float32), k1, k2, m, seed, sample_size=sample_size
+            )
+            cbs1.append(cb1)
+            idxs1.append(idx1.astype(idx_dtype1))
+            cbs2.append(cb2)
+            idxs2.append(idx2.astype(idx_dtype2))
+            pos.append((r, col))
+    if not cbs1:
+        return (
+            np.zeros((0, k1_eff, c), dtype=np.float32),
+            np.zeros((0, t, t), dtype=idx_dtype1),
+            np.zeros((0, k2_eff, c), dtype=np.float32),
+            np.zeros((0, t, t), dtype=idx_dtype2),
+            np.zeros((0, 2), dtype=np.int32),
+        )
+    return (
+        np.stack(cbs1).astype(np.float32, copy=False),
+        np.stack(idxs1),
+        np.stack(cbs2).astype(np.float32, copy=False),
+        np.stack(idxs2),
+        np.asarray(pos, dtype=np.int32),
+    )
+
+
 def quantize_window_residual_norms(
     window: npt.NDArray[np.float32],
     t: int,

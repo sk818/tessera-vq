@@ -1,12 +1,16 @@
 """Tests for tessera_vq.sweep: vectorised k-means and the (t, K, m) sweep."""
 
 import numpy as np
+import pytest
 
 from tessera_vq.sweep import (
     fast_quantize_tile,
     quantize_window_for_serving,
     quantize_window_residual_norms,
     reconstruction_quantiles,
+    rvq_quantize_tile,
+    rvq_quantize_window_for_serving,
+    rvq_reconstruct_tile,
     sweep_window,
 )
 
@@ -84,6 +88,41 @@ def test_quantize_window_residual_norms_shape_and_sanity() -> None:
     # noise has L2 magnitude ~ 0.1 * sqrt(128) ~= 1.13; reconstruction with k>=3 should
     # leave each pixel residual at roughly that scale.
     assert float(norms.mean()) < 1.5
+
+
+def test_rvq_quantize_tile_lowers_error_vs_single_stage() -> None:
+    """Two-stage RVQ reconstruction is at least as good as single-stage with the same k1."""
+    tile = _three_cluster_tile(32, 32, 128, seed=10)
+    cb1, idx1 = fast_quantize_tile(tile, k=4, distance="euclidean", seed=42)
+    single_err = float(
+        np.mean(np.linalg.norm(tile.reshape(-1, 128) - cb1[idx1].reshape(-1, 128), axis=1))
+    )
+    cb1, idx1, cb2, idx2 = rvq_quantize_tile(tile, k1=4, k2=4, m="euclidean", seed=42)
+    rvq_recon = rvq_reconstruct_tile(cb1, idx1, cb2, idx2)
+    rvq_err = float(
+        np.mean(np.linalg.norm(tile.reshape(-1, 128) - rvq_recon.reshape(-1, 128), axis=1))
+    )
+    assert cb1.shape == (4, 128) and cb2.shape == (4, 128)
+    assert idx1.shape == (32, 32) and idx2.shape == (32, 32)
+    assert rvq_err <= single_err  # RVQ never worse than stage 1 alone
+
+
+def test_rvq_quantize_tile_rejects_cosine() -> None:
+    """Cosine RVQ is not supported (stage 1 discards magnitude)."""
+    tile = _three_cluster_tile(16, 16, 32, seed=11)
+    with pytest.raises(NotImplementedError, match="euclidean"):
+        rvq_quantize_tile(tile, k1=4, k2=4, m="cosine", seed=42)
+
+
+def test_rvq_quantize_window_for_serving_shapes() -> None:
+    """RVQ on a window yields stacked codebooks/indices + positions."""
+    window = _three_cluster_tile(64, 64, 128, seed=12)
+    cbs1, idxs1, cbs2, idxs2, pos = rvq_quantize_window_for_serving(
+        window, t=32, k1=4, k2=4, m="euclidean", seed=42
+    )
+    assert cbs1.shape == (4, 4, 128) and cbs2.shape == (4, 4, 128)
+    assert idxs1.shape == (4, 32, 32) and idxs2.shape == (4, 32, 32)
+    assert pos.shape == (4, 2)
 
 
 def test_quantize_window_residual_norms_skips_nan_tiles() -> None:

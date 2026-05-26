@@ -89,6 +89,12 @@ Endpoints:
   returns JSON `{n_pixels, bin_edges, counts, stats{mean, p10, p50, p90, p99}}` —
   per-pixel L2-residual-norm histogram + summary, for plotting "how off is each
   pixel" in a UI.
+- `POST /quantized_rvq` — body `{bbox, t, k1, k2, m?, year?, sample_size?, seed?}`
+  for **two-stage Residual VQ** (euclidean only). Returns an NPZ with two codebooks
+  + two index maps per tile; reconstruction is
+  `codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]`. Lower reconstruction
+  error at the cost of `log₂(k₁·k₂)` bits per pixel. Pass `k2` to `VQTessera` to
+  use this from the client.
 
 The expensive exploration sweep is **not** exposed — call `sweep_window` as a
 library function on a locally-fetched mosaic instead. Both endpoints reject

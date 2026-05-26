@@ -33,7 +33,12 @@ import numpy as np
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.data import read_region
-from tessera_vq.sweep import Distance, quantize_window_for_serving, quantize_window_residual_norms
+from tessera_vq.sweep import (
+    Distance,
+    quantize_window_for_serving,
+    quantize_window_residual_norms,
+    rvq_quantize_window_for_serving,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +103,67 @@ def quantized() -> Response:
         indices=indices,
         positions=positions,
         meta=np.asarray([t, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
+        distance=np.asarray(m),
+    )
+    return Response(buf.getvalue(), mimetype="application/octet-stream")
+
+
+@app.post("/quantized_rvq")  # type: ignore
+def quantized_rvq() -> Response:  # noqa: PLR0911
+    """Return per-tile RVQ codebooks + index maps as NPZ for ``(t, k1, k2)``.
+
+    Body: ``{bbox, t, k1, k2, m?, year?, sample_size?, seed?}``. Response NPZ:
+    ``codebooks1 (n_tiles, k1_eff, 128) float32``,
+    ``indices1   (n_tiles, t, t) uint8/16``,
+    ``codebooks2 (n_tiles, k2_eff, 128) float32``,
+    ``indices2   (n_tiles, t, t) uint8/16``,
+    ``positions  (n_tiles, 2) int32``, plus small ``meta``/``distance`` arrays.
+    Reconstruct each tile as ``codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]``.
+    """
+    body: dict[str, Any] = cast("dict[str, Any]", request.get_json(force=True))
+    bbox = tuple(float(v) for v in body["bbox"])
+    if len(bbox) != 4:  # noqa: PLR2004
+        return _bad_request("bbox must be [lon0, lat0, lon1, lat1]")
+    too_big = _check_bbox_size(bbox)
+    if too_big:
+        return _bad_request(too_big, code=413)
+    if "t" not in body or "k1" not in body or "k2" not in body:
+        return _bad_request("missing required 't', 'k1', and/or 'k2'")
+    t = int(body["t"])
+    k1 = int(body["k1"])
+    k2 = int(body["k2"])
+    if t <= 0 or k1 <= 0 or k2 <= 0:
+        return _bad_request("'t', 'k1', and 'k2' must be positive")
+    m: Distance = cast("Distance", body.get("m", "euclidean"))
+    year = int(body.get("year", 2024))
+    sample_size = int(body.get("sample_size", 2000))
+    seed = int(body.get("seed", 42))
+    mosaic, path = read_region(bbox, year)
+    if mosaic is None:
+        return _bad_request("no embeddings available for bbox", code=404)
+    cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
+        mosaic, t, k1, k2, m, seed, sample_size=sample_size
+    )
+    logger.info(
+        "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
+        bbox,
+        year,
+        t,
+        k1,
+        k2,
+        m,
+        path,
+        positions.shape[0],
+    )
+    buf = io.BytesIO()
+    np.savez(
+        buf,
+        codebooks1=cbs1,
+        indices1=idxs1,
+        codebooks2=cbs2,
+        indices2=idxs2,
+        positions=positions,
+        meta=np.asarray([t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
         distance=np.asarray(m),
     )
     return Response(buf.getvalue(), mimetype="application/octet-stream")
