@@ -359,10 +359,11 @@ Three modules, no native dependencies (NumPy + Flask only):
 ### Endpoints
 
 - `GET  /health` — liveness probe.
-- `POST /sweep` — body `{bbox, year?, ts?, ks?, ms?, sample_size?, seed?}`; returns one row per `(t, k, m, subtile)` with reconstruction quantiles `cos_p{10,50,90,99}` and `l2_p{10,50,90,99}`.
 - `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`; returns an **NPZ** (mimicking geotessera's numpy-on-the-wire format) with arrays `codebooks (n_tiles, k_eff, 128) float32`, `indices (n_tiles, t, t) uint8/uint16`, `positions (n_tiles, 2) int32`, plus small `meta`/`distance` arrays. `n_tiles` excludes NaN-containing tiles.
 
-Both endpoints reject bboxes larger than `TESSERA_VQ_MAX_BBOX_KM` per side (default **10 km**) with HTTP 413 — a 10 km × 10 km area is ~10⁶ pixels ≈ 500 MB float32 in memory, the practical comfort ceiling for a single in-process request. Set the env var to raise the cap on the server.
+The exploration `sweep_window` is deliberately **not** an HTTP endpoint — it's a library call on a locally-fetched mosaic, so the CPU cost stays with the caller. The server only runs the chosen `(t, k, m)`.
+
+`/quantized` rejects bboxes larger than `TESSERA_VQ_MAX_BBOX_KM` per side (default **10 km**) with HTTP 413 — a 10 km × 10 km area is ~10⁶ pixels ≈ 500 MB float32 in memory, the practical comfort ceiling for a single in-process request.
 
 ### Tasks
 

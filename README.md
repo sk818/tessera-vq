@@ -1,26 +1,100 @@
 # tessera-vq
 
-Per-tile **vector quantisation (VQ) for Tessera embedding compression**. Tessera is a
-self-supervised foundation model producing 128-dimensional embeddings per ~10 m × 10 m pixel of
-Earth's surface. Within a tile only a handful of land-cover prototypes typically appear, so a small
-per-tile codebook plus an index map can compress 99%+ of the bytes with limited downstream accuracy
-loss. This repository implements and evaluates that idea against the Robinson & Corley compression
-frontier, and produces (a) a tech note and (b) an engineering recommendation for GeoTessera. The work
-is supervised by S. Keshav as part of the CAC project.
+Per-tile **vector quantisation (VQ)** for [Tessera](https://geotessera.org)
+embeddings. Tessera produces 128-d float32 embeddings per ~10 m × 10 m pixel of
+Earth's surface; within a tile only a handful of land-cover prototypes typically
+appear, so a small per-tile codebook + index map can compress 99%+ of the bytes
+with limited downstream accuracy loss.
 
-## Where things live
+This repository provides:
 
-- [`CLAUDE.md`](CLAUDE.md) — stable project conventions (code style, git workflow, determinism, things never to do).
-- [`config.yaml`](config.yaml) — all paths, seeds, and the parameter grid. Scripts read from here; nothing is hard-coded.
-- [`docs/spec.md`](docs/spec.md) — the phase-by-phase execution plan, with mandatory HALT points between phases.
+1. A **library** for running per-tile k-means VQ on Tessera embeddings you've
+   fetched yourself (the primary, public use-case — sweeps run on *your* CPU).
+2. An **optional plug-compatible client** (`VQTessera`) that mirrors
+   `geotessera.GeoTessera` for code that already speaks that API.
+3. An **optional small Flask server** for serving the quantised representation
+   (`POST /quantized`) — bbox-capped at 10 km/side, no exploration sweeps.
 
-## Layout
+## Install
 
-- `tessera_vq/` — library code (loaders, quantisation, Morton/Hilbert ordering, entropy coding, metrics, probes, IO).
-- `scripts/` — one entry point per analytical phase.
-- `notebooks/` — plotting only.
-- `tests/` — unit tests on synthetic fixtures (no real Tessera data required).
-- `results/`, `figures/`, `logs/` — outputs (git-ignored).
+```bash
+pip install "tessera-vq @ git+https://github.com/sk818/tessera-vq.git@v0.1.0"
+# or, for the server too:
+pip install "tessera-vq[server] @ git+https://github.com/sk818/tessera-vq.git@v0.1.0"
+```
+
+Requires Python ≥ 3.12.
+
+## Quick start — library, on your own embeddings
+
+```python
+from geotessera import GeoTessera
+from tessera_vq.sweep import sweep_window, quantize_window_for_serving
+
+gt = GeoTessera()
+mosaic, transform, crs = gt.fetch_mosaic_for_region(
+    (0.145, 52.045, 0.155, 52.055), year=2024
+)
+
+# 1) Explore the rate–distortion frontier on your bbox
+rows = sweep_window(
+    mosaic,
+    ts=[16, 64, 256],
+    ks=[4, 16, 64, 256],
+    ms=["euclidean", "cosine"],
+)
+# rows: one per (t, k, m, subtile) with cosine/L2 reconstruction quantiles
+
+# 2) Produce the compressed representation for the chosen (t, k, m)
+codebooks, indices, positions = quantize_window_for_serving(
+    mosaic, t=64, k=16, m="cosine"
+)
+# codebooks: (n_tiles, k_eff, 128) float32
+# indices:   (n_tiles, t, t) uint8/16
+# positions: (n_tiles, 2) int32  -- tile (row, col) in the bbox grid
+```
+
+K-means is a vectorised NumPy Lloyd implementation (sample-fit then
+memory-bounded full-tile assign), no native dependencies. Cosine distance is
+implemented as euclidean k-means on L2-normalised inputs.
+
+## Plug-compatible client (drop-in for `GeoTessera`)
+
+If you host the optional Flask server on a machine LAN-close to your embeddings
+store, point `VQTessera` at it:
+
+```python
+from tessera_vq.client import VQTessera   # drop-in for geotessera.GeoTessera
+
+gt = VQTessera("http://your-host:8000", t=64, k=16, m="cosine")
+mosaic, transform, crs = gt.fetch_mosaic_for_region(bbox, year=2024)
+```
+
+Same `(mosaic, transform, crs)` return shape as `GeoTessera.fetch_mosaic_for_region`,
+so existing pipelines that consume `GeoTessera` need a one-line swap.
+
+## Optional self-hosted server
+
+```bash
+pip install -e ".[server]"
+python -m tessera_vq.server   # Flask + waitress on 0.0.0.0:8000
+```
+
+Endpoints:
+
+- `GET  /health` — liveness probe.
+- `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`,
+  returns an NPZ of `codebooks`, `indices`, `positions`, `meta`, `distance`.
+
+The expensive exploration sweep is **not** exposed — call `sweep_window` as a
+library function on a locally-fetched mosaic instead. Both endpoints reject
+bboxes larger than `TESSERA_VQ_MAX_BBOX_KM` per side (default 10 km) with
+HTTP 413.
+
+The server ships no authentication of its own — put it behind a reverse proxy
+with auth (Apache / nginx) before exposing publicly. See
+[`docs/integration.md`](docs/integration.md) for the parent-service integration
+pattern.
 
 ## Development
 
@@ -32,19 +106,15 @@ uv run ruff check .
 uv run mypy tessera_vq scripts
 ```
 
-## Interactive (t, K, m) bolt-on
+## License
 
-The bolt-on lives in `tessera_vq.server` (Flask + waitress; install with `pip install -e .[server]`). Run it LAN-close to the embeddings store: `uv run python -m tessera_vq.server`. Endpoints: `GET /health`, `POST /sweep` (rate-distortion table), `POST /quantized` (NPZ of codebooks + index maps). See `docs/spec.md` §8.
+MIT — see [`LICENSE`](LICENSE).
 
-For downstream code, `tessera_vq.client.VQTessera` is a plug-compatible drop-in for `geotessera.GeoTessera`:
+## Layout
 
-```python
-from tessera_vq.client import VQTessera
-
-gt = VQTessera(server_url="http://michael:8000", t=64, k=16, m="cosine")
-mosaic, transform, crs = gt.fetch_mosaic_for_region(
-    (0.145, 52.045, 0.155, 52.055), year=2024
-)
-```
-
-Same `(mosaic, transform, crs)` return shape as `GeoTessera.fetch_mosaic_for_region`.
+- `tessera_vq/` — library (`data`, `quantize`, `sweep`, `metrics`, `io_utils`,
+  `client`, `server`, vendored `zarr_utils`).
+- `scripts/` — analytical-phase entry points (isotropy, reconstruction sweep).
+- `tests/` — unit tests on synthetic fixtures.
+- `docs/spec.md` — design / phase plan.
+- `docs/integration.md` — how to integrate with a parent service.

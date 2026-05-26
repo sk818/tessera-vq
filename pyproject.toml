@@ -5,6 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tessera-vq"
 version = "0.1.0"
+description = "Per-tile vector quantisation of Tessera embeddings: library, optional server, plug-compatible client."
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "S. Keshav"}]
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",

@@ -1,14 +1,21 @@
-"""Flask bolt-on for interactive (t, K, m) exploration of Tessera VQ.
+"""Flask bolt-on for serving Tessera VQ-quantised embeddings.
 
-Designed to run LAN-close to the geotessera embeddings store (no client cache).
+The server is intentionally narrow: given a chosen ``(t, k, m)`` and a bbox it runs
+one k-means per tile and returns an NPZ. CPU per request is bounded (one k-means at
+the sample size + a vectorised assign), and a per-side bbox cap (default 10 km)
+prevents over-large requests. Designed to run LAN-close to the geotessera embeddings
+store.
+
+The expensive *exploration* sweep over many ``(t, k, m)`` combinations is **not**
+served from here — call ``tessera_vq.sweep.sweep_window`` directly as a library on
+embeddings you've fetched locally via geotessera. That keeps exploration CPU on the
+caller, not on the public server.
+
 Endpoints:
 
 - ``GET  /health``       liveness probe.
-- ``POST /sweep``        body ``{bbox: [lon0,lat0,lon1,lat1], year?, ts?, ks?, ms?,
-                          sample_size?, seed?}``  ->  per-(t, k, m, subtile) reconstruction
-                          quantiles for the user's bbox. Fetches embeddings on demand.
-- ``POST /quantized``    once (t, k, m) is chosen, returns an NPZ of codebooks + index
-                          maps + tile positions per the chosen ``(t, k, m)``.
+- ``POST /quantized``    body ``{bbox, t, k, m?, year?, sample_size?, seed?}`` ->
+                          NPZ of codebooks + index maps + tile positions.
 
 Run with::
 
@@ -26,13 +33,10 @@ import numpy as np
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.data import read_region
-from tessera_vq.sweep import Distance, quantize_window_for_serving, sweep_window
+from tessera_vq.sweep import Distance, quantize_window_for_serving
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TS = [16, 64, 256, 1024]
-_DEFAULT_KS = [4, 16, 64, 256]
-_DEFAULT_MS: list[Distance] = ["euclidean", "cosine"]
 # Max bbox side in km (per side). Default 10 km -> ~1e6 px -> ~500 MB float32 mosaic.
 # Override on the server with: export TESSERA_VQ_MAX_BBOX_KM=20
 _MAX_BBOX_KM = float(os.environ.get("TESSERA_VQ_MAX_BBOX_KM", "10.0"))
@@ -44,39 +48,6 @@ app = Flask("tessera_vq")
 @app.get("/health")  # type: ignore
 def health() -> Response:
     return jsonify({"ok": True})
-
-
-@app.post("/sweep")  # type: ignore
-def sweep() -> Response:
-    """Run a (t, K, m) sweep on the embeddings for the requested bbox."""
-    body: dict[str, Any] = cast("dict[str, Any]", request.get_json(force=True))
-    bbox = tuple(float(v) for v in body["bbox"])
-    if len(bbox) != 4:  # noqa: PLR2004
-        return _bad_request("bbox must be [lon0, lat0, lon1, lat1]")
-    too_big = _check_bbox_size(bbox)
-    if too_big:
-        return _bad_request(too_big, code=413)
-    year = int(body.get("year", 2024))
-    ts: list[int] = [int(t) for t in body.get("ts", _DEFAULT_TS)]
-    ks: list[int] = [int(k) for k in body.get("ks", _DEFAULT_KS)]
-    ms: list[Distance] = [cast("Distance", m) for m in body.get("ms", _DEFAULT_MS)]
-    sample_size = int(body.get("sample_size", 2000))
-    seed = int(body.get("seed", 42))
-    mosaic, path = read_region(bbox, year)
-    if mosaic is None:
-        return _bad_request("no embeddings available for bbox", code=404)
-    logger.info(
-        "sweep bbox=%s year=%d shape=%s path=%s ts=%s ks=%s ms=%s",
-        bbox,
-        year,
-        mosaic.shape,
-        path,
-        ts,
-        ks,
-        ms,
-    )
-    rows = sweep_window(mosaic, ts, ks, ms, seed=seed, sample_size=sample_size)
-    return jsonify({"bbox": list(bbox), "year": year, "shape": list(mosaic.shape), "rows": rows})
 
 
 @app.post("/quantized")  # type: ignore
