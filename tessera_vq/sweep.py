@@ -131,6 +131,52 @@ def _iterate_subtiles(window: npt.NDArray[np.float32], t: int) -> list[npt.NDArr
     return out
 
 
+def quantize_window_for_serving(
+    window: npt.NDArray[np.float32],
+    t: int,
+    k: int,
+    m: Distance,
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint16], npt.NDArray[np.int32]]:
+    """Tile ``window`` into non-overlapping t x t blocks; quantise each all-finite block.
+
+    Returns ``(codebooks, indices, positions)`` where:
+      ``codebooks``  ``(n_tiles, k_eff, 128)`` float32  (``k_eff = min(k, t * t)``)
+      ``indices``    ``(n_tiles, t, t)``  uint8 if ``k_eff <= 256`` else uint16
+      ``positions``  ``(n_tiles, 2)`` int32 ``(row, col)`` in the bbox tile-grid.
+    """
+    h, w, c = window.shape
+    rows, cols = h // t, w // t
+    k_eff = min(k, t * t)
+    # Any: older mypys won't narrow the conditional dtype expression; runtime is correct.
+    idx_dtype: Any = np.uint8 if k_eff <= 256 else np.uint16  # noqa: PLR2004
+    cbs: list[npt.NDArray[np.float32]] = []
+    idxs: list[npt.NDArray[Any]] = []
+    pos: list[tuple[int, int]] = []
+    for r in range(rows):
+        for col in range(cols):
+            tile = window[r * t : (r + 1) * t, col * t : (col + 1) * t]
+            if not np.isfinite(tile).all():
+                continue
+            cb, idx = fast_quantize_tile(tile, k, m, seed, sample_size=sample_size)
+            cbs.append(cb)
+            idxs.append(idx.astype(idx_dtype))
+            pos.append((r, col))
+    if not cbs:
+        return (
+            np.zeros((0, k_eff, c), dtype=np.float32),
+            np.zeros((0, t, t), dtype=idx_dtype),
+            np.zeros((0, 2), dtype=np.int32),
+        )
+    return (
+        np.stack(cbs).astype(np.float32, copy=False),
+        np.stack(idxs),
+        np.asarray(pos, dtype=np.int32),
+    )
+
+
 def sweep_window(
     window: npt.NDArray[np.float32],
     ts: list[int],

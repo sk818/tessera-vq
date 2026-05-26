@@ -360,15 +360,15 @@ Three modules, no native dependencies (NumPy + Flask only):
 
 - `GET  /health` — liveness probe.
 - `POST /sweep` — body `{bbox, year?, ts?, ks?, ms?, sample_size?, seed?}`; returns one row per `(t, k, m, subtile)` with reconstruction quantiles `cos_p{10,50,90,99}` and `l2_p{10,50,90,99}`.
-- `POST /quantized` — *stub*: once `(t, k, m)` is chosen, stream codebook + index map per tile.
+- `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`; returns an **NPZ** (mimicking geotessera's numpy-on-the-wire format) with arrays `codebooks (n_tiles, k_eff, 128) float32`, `indices (n_tiles, t, t) uint8/uint16`, `positions (n_tiles, 2) int32`, plus small `meta`/`distance` arrays. `n_tiles` excludes NaN-containing tiles.
 
 ### Tasks
 
 1. Vendor `zarr_utils`; implement `tessera_vq.data.read_region` (zarr_then_bbox). **Done.**
 2. Implement `tessera_vq.sweep` (sampled, vectorised k-means + reconstruction quantiles + `sweep_window`). **Done.**
-3. Implement `tessera_vq.server` with the three endpoints; small JSON contract. **Done (skeleton; `/quantized` still a stub).**
-4. Unit tests for `sweep`: synthetic cluster recovery, cosine path, `sweep_window` structure. **Done (`tests/test_sweep.py`).**
-5. **TODO** — fill in `/quantized` (codebook + indices payload + small client example).
+3. Implement `tessera_vq.server` with the three endpoints; small JSON contract for `/sweep`, NPZ for `/quantized`. **Done.**
+4. Unit tests for `sweep`: synthetic cluster recovery, cosine path, `sweep_window` structure, `quantize_window_for_serving` shapes + NaN handling. **Done (`tests/test_sweep.py`).**
+5. **TODO** — small client example (decode the `/quantized` NPZ; reconstruct any pixel as `codebooks[i][indices[i, r, c]]`).
 6. **TODO** — optional `/search` over codebooks across a region (DiskANN-style ANN index), if needed.
 
 ### Validation

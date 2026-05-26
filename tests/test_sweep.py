@@ -2,7 +2,12 @@
 
 import numpy as np
 
-from tessera_vq.sweep import fast_quantize_tile, reconstruction_quantiles, sweep_window
+from tessera_vq.sweep import (
+    fast_quantize_tile,
+    quantize_window_for_serving,
+    reconstruction_quantiles,
+    sweep_window,
+)
 
 
 def _three_cluster_tile(h: int, w: int, dim: int, seed: int) -> np.ndarray:
@@ -52,3 +57,27 @@ def test_sweep_window_structure() -> None:
     assert len(rows) >= 1
     expected = {"t", "subtile", "k", "m", "n_pixels", "cos_p50", "l2_p50"}
     assert expected.issubset(rows[0].keys())
+
+
+def test_quantize_window_for_serving_shapes_and_dtypes() -> None:
+    """Tiling shapes are (n, k, 128) f32 / (n, t, t) uint8 / (n, 2) i32 for k<=256."""
+    window = _three_cluster_tile(64, 64, 128, seed=4)
+    cbs, idxs, pos = quantize_window_for_serving(window, t=32, k=4, m="euclidean", seed=42)
+    assert cbs.shape == (4, 4, 128)  # 64/32 = 2 -> 2x2 = 4 tiles, k_eff = min(4, 32*32) = 4
+    assert cbs.dtype == np.float32
+    assert idxs.shape == (4, 32, 32)
+    assert idxs.dtype == np.uint8
+    assert pos.shape == (4, 2)
+    assert pos.dtype == np.int32
+    # positions should cover the full (rows, cols) grid {(0,0),(0,1),(1,0),(1,1)}
+    assert {tuple(p) for p in pos} == {(0, 0), (0, 1), (1, 0), (1, 1)}
+
+
+def test_quantize_window_for_serving_skips_nan_tiles() -> None:
+    """A tile with any NaN is dropped; positions reflect only kept tiles."""
+    window = _three_cluster_tile(64, 64, 128, seed=5).copy()
+    window[:32, :32, 0] = np.nan  # corrupt the (0, 0) tile
+    cbs, idxs, pos = quantize_window_for_serving(window, t=32, k=4, m="euclidean", seed=42)
+    assert cbs.shape[0] == 3
+    assert idxs.shape[0] == 3
+    assert (0, 0) not in {tuple(p) for p in pos}
