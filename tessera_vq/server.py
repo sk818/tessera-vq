@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from typing import Any, cast
 
 import numpy as np
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TS = [16, 64, 256, 1024]
 _DEFAULT_KS = [4, 16, 64, 256]
 _DEFAULT_MS: list[Distance] = ["euclidean", "cosine"]
+# Max bbox side in km (per side). Default 10 km -> ~1e6 px -> ~500 MB float32 mosaic.
+# Override on the server with: export TESSERA_VQ_MAX_BBOX_KM=20
+_MAX_BBOX_KM = float(os.environ.get("TESSERA_VQ_MAX_BBOX_KM", "10.0"))
+_KM_PER_DEG_LAT = 111.32
 
 app = Flask("tessera_vq")
 
@@ -48,6 +53,9 @@ def sweep() -> Response:
     bbox = tuple(float(v) for v in body["bbox"])
     if len(bbox) != 4:  # noqa: PLR2004
         return _bad_request("bbox must be [lon0, lat0, lon1, lat1]")
+    too_big = _check_bbox_size(bbox)
+    if too_big:
+        return _bad_request(too_big, code=413)
     year = int(body.get("year", 2024))
     ts: list[int] = [int(t) for t in body.get("ts", _DEFAULT_TS)]
     ks: list[int] = [int(k) for k in body.get("ks", _DEFAULT_KS)]
@@ -83,6 +91,9 @@ def quantized() -> Response:
     bbox = tuple(float(v) for v in body["bbox"])
     if len(bbox) != 4:  # noqa: PLR2004
         return _bad_request("bbox must be [lon0, lat0, lon1, lat1]")
+    too_big = _check_bbox_size(bbox)
+    if too_big:
+        return _bad_request(too_big, code=413)
     if "t" not in body or "k" not in body:
         return _bad_request("missing required 't' and/or 'k'")
     t = int(body["t"])
@@ -126,6 +137,26 @@ def _bad_request(message: str, *, code: int = 400) -> Response:
     response = jsonify({"error": message})
     response.status_code = code
     return response
+
+
+def _bbox_size_km(bbox: tuple[float, ...]) -> tuple[float, float]:
+    """Approximate ``(width_km, height_km)`` for a lon/lat bbox at its mid-latitude."""
+    lon0, lat0, lon1, lat1 = bbox
+    mid_lat = (lat0 + lat1) / 2.0
+    width_km = abs(lon1 - lon0) * _KM_PER_DEG_LAT * float(np.cos(np.radians(mid_lat)))
+    height_km = abs(lat1 - lat0) * _KM_PER_DEG_LAT
+    return width_km, height_km
+
+
+def _check_bbox_size(bbox: tuple[float, ...]) -> str | None:
+    """Return an error message if ``bbox`` exceeds ``_MAX_BBOX_KM`` per side, else None."""
+    width_km, height_km = _bbox_size_km(bbox)
+    if width_km > _MAX_BBOX_KM or height_km > _MAX_BBOX_KM:
+        return (
+            f"bbox too large ({width_km:.1f} km x {height_km:.1f} km); "
+            f"max {_MAX_BBOX_KM:.1f} km per side (set TESSERA_VQ_MAX_BBOX_KM to raise)"
+        )
+    return None
 
 
 def main() -> None:
