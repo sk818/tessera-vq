@@ -282,6 +282,70 @@ def sample_isotropy_uk(
     return np.concatenate(chunks, axis=0), len(chunks)
 
 
+def _read_window_native(
+    loc: npt.NDArray[np.float64],
+    window_px: int,
+    year: int,
+    gtz: Any,
+    max_nan_fraction: float,
+) -> npt.NDArray[np.float32] | None:
+    """Native zarr read of a ``window_px`` patch at ``loc`` (no reproject)."""
+    bounds = _window_bounds(float(loc[0]), float(loc[1]), window_px)
+    try:
+        mosaic, _, _ = gtz.read_region(bounds, year)
+    except Exception as exc:  # one bad window must not abort the batch
+        logger.debug("UK window read failed at (%.3f, %.3f): %s", loc[0], loc[1], exc)
+        return None
+    if mosaic is None:
+        return None
+    patch = np.asarray(mosaic, dtype=np.float32)
+    if float(np.isnan(patch).any(axis=2).mean()) > max_nan_fraction:
+        return None
+    return patch
+
+
+def iter_uk_windows_parallel(
+    n_windows: int,
+    window_px: int = 1024,
+    bbox: tuple[float, float, float, float] = UK_BBOX,
+    year: int = 2024,
+    seed: int = 42,
+    *,
+    n_jobs: int = 4,
+    max_nan_fraction: float = 0.5,
+) -> Iterator[npt.NDArray[np.float32]]:
+    """Yield UK land patches (``window_px`` square) read in parallel batches via zarr."""
+    rng = np.random.default_rng(seed)
+    centers = available_land_centers(year)
+    lon0, lat0, lon1, lat1 = bbox
+    mask = (
+        (centers[:, 0] >= lon0)
+        & (centers[:, 0] <= lon1)
+        & (centers[:, 1] >= lat0)
+        & (centers[:, 1] <= lat1)
+    )
+    uk = centers[mask]
+    if uk.shape[0] == 0:
+        raise RuntimeError("no land tiles in bbox")
+    locs = uk[rng.choice(uk.shape[0], size=n_windows, replace=uk.shape[0] < n_windows)]
+    gtz = zarr_utils.get_zarr()
+    if gtz is None:
+        raise RuntimeError("zarr unavailable")
+    kept = 0
+    for batch_start in range(0, n_windows, n_jobs):
+        batch = locs[batch_start : batch_start + n_jobs]
+        results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_read_window_native)(loc, window_px, year, gtz, max_nan_fraction)
+            for loc in batch
+        )
+        for patch in results:
+            if patch is not None:
+                kept += 1
+                yield patch
+    if kept < n_windows:
+        logger.warning("kept %d/%d UK windows", kept, n_windows)
+
+
 def collect_isotropy_points(
     bbox: tuple[float, float, float, float],
     n_windows: int,

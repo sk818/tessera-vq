@@ -1,0 +1,154 @@
+"""Fast per-tile (t, K, m) sweep for the interactive bolt-on.
+
+K-means is the per-call hot loop, so we keep it dependency-free and tight:
+- subsample ``sample_size`` pixels per tile for the *fit*, then assign all pixels;
+- the fit is a vectorised numpy Lloyd's iteration (one-hot ``onehot.T @ x`` update,
+  no Python per-point loops);
+- the assign step is a memory-bounded ``x @ centers.T`` argmax in blocks;
+- ``distance="cosine"`` L2-normalises before clustering (euclidean k-means on the
+  unit sphere ≡ cosine k-means).
+
+Designed for use inside ``tessera_vq.server`` (Flask /sweep endpoint).
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal, cast
+
+import numpy as np
+import numpy.typing as npt
+
+Distance = Literal["euclidean", "cosine"]
+
+_DEFAULT_KMEANS_ITERS = 20  # Lloyd iterations on the sample.
+_KMEANS_CONVERGE_TOL = 1e-4  # ||new - old|| frobenius shift to stop early.
+
+
+def _normalise(x: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+    """L2-normalise rows (for the cosine-via-euclidean trick)."""
+    n = np.linalg.norm(x, axis=1, keepdims=True)
+    return (x / np.where(n > 0, n, 1.0)).astype(np.float32, copy=False)
+
+
+def _vectorised_kmeans_fit(
+    x: npt.NDArray[np.float32], k: int, seed: int, *, n_iter: int = _DEFAULT_KMEANS_ITERS
+) -> npt.NDArray[np.float32]:
+    """Lloyd's k-means with vectorised numpy ops; returns ``(k_eff, d)`` centroids.
+
+    The update step uses a one-hot label matrix and a single ``onehot.T @ x`` matmul
+    (no Python loops over points or clusters). Empty clusters are re-seeded.
+    """
+    rng = np.random.default_rng(seed)
+    n = x.shape[0]
+    k_eff = min(k, n)
+    centers = x[rng.choice(n, size=k_eff, replace=False)].astype(np.float32, copy=True)
+    for _ in range(n_iter):
+        cc = (centers * centers).sum(axis=1)
+        labels = (x @ centers.T - 0.5 * cc).argmax(axis=1)
+        onehot = np.zeros((n, k_eff), dtype=np.float32)
+        onehot[np.arange(n), labels] = 1.0
+        counts = onehot.sum(axis=0)
+        nonempty = counts > 0
+        new_centers = np.zeros_like(centers)
+        new_centers[nonempty] = (onehot.T @ x)[nonempty] / counts[nonempty, None]
+        empty = np.where(~nonempty)[0]
+        if empty.size:
+            new_centers[empty] = x[rng.choice(n, size=empty.size, replace=False)]
+        shift = float(np.linalg.norm(new_centers - centers))
+        centers = new_centers
+        if shift < _KMEANS_CONVERGE_TOL:
+            break
+    return cast("npt.NDArray[np.float32]", centers)
+
+
+def fast_quantize_tile(
+    tile: npt.NDArray[np.float32],
+    k: int,
+    distance: Distance,
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+    n_iter: int = _DEFAULT_KMEANS_ITERS,
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
+    """Fast sampled k-means quantisation of an ``(H, W, 128)`` tile."""
+    h, w, c = tile.shape
+    x = tile.reshape(-1, c).astype(np.float32, copy=False)
+    if distance == "cosine":
+        x = _normalise(x)
+    rng = np.random.default_rng(seed)
+    if sample_size and x.shape[0] > sample_size:
+        x_fit = x[rng.choice(x.shape[0], size=sample_size, replace=False)]
+    else:
+        x_fit = x
+    centers = _vectorised_kmeans_fit(x_fit, k, seed, n_iter=n_iter)
+    indices = _assign_to_centers(x, centers)
+    return centers, indices.reshape(h, w)
+
+
+def _assign_to_centers(
+    x: npt.NDArray[np.float32], centers: npt.NDArray[np.float32], block: int = 65536
+) -> npt.NDArray[np.int32]:
+    """Memory-bounded argmin over pairwise euclidean distance."""
+    n = x.shape[0]
+    out = np.empty(n, dtype=np.int32)
+    cc = (centers * centers).sum(axis=1)
+    for i in range(0, n, block):
+        xb = x[i : i + block]
+        # ||x||^2 + ||c||^2 - 2 x.c  -> argmin over c is same as argmax of x.c - 0.5||c||^2
+        score = xb @ centers.T - 0.5 * cc
+        out[i : i + block] = score.argmax(axis=1).astype(np.int32)
+    return out
+
+
+def reconstruction_quantiles(
+    original: npt.NDArray[np.float32], reconstruction: npt.NDArray[np.float32]
+) -> dict[str, float]:
+    """Per-pixel cosine distance and L2 quantiles (10/50/90/99) between tile + reconstruction."""
+    o = original.reshape(-1, original.shape[-1]).astype(np.float64)
+    r = reconstruction.reshape(-1, reconstruction.shape[-1]).astype(np.float64)
+    on = np.linalg.norm(o, axis=1)
+    rn = np.linalg.norm(r, axis=1)
+    denom = np.where((on > 0) & (rn > 0), on * rn, 1.0)
+    cos_dist = 1.0 - (o * r).sum(axis=1) / denom
+    l2 = np.linalg.norm(o - r, axis=1)
+    out: dict[str, float] = {}
+    for q in (0.1, 0.5, 0.9, 0.99):
+        tag = f"p{int(q * 100)}"
+        out[f"cos_{tag}"] = float(np.quantile(cos_dist, q))
+        out[f"l2_{tag}"] = float(np.quantile(l2, q))
+    return out
+
+
+def _iterate_subtiles(window: npt.NDArray[np.float32], t: int) -> list[npt.NDArray[np.float32]]:
+    """Non-overlapping ``t x t`` sub-tiles of ``window`` that are entirely finite."""
+    h, w, _ = window.shape
+    out: list[npt.NDArray[np.float32]] = []
+    for r in range(0, (h // t) * t, t):
+        for c in range(0, (w // t) * t, t):
+            tile = window[r : r + t, c : c + t]
+            if np.isfinite(tile).all():
+                out.append(np.asarray(tile, dtype=np.float32))
+    return out
+
+
+def sweep_window(
+    window: npt.NDArray[np.float32],
+    ts: list[int],
+    ks: list[int],
+    ms: list[Distance],
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> list[dict[str, Any]]:
+    """Run the (t, K, m) sweep on one window; one row per ``(t, K, m, subtile_idx)``."""
+    rows: list[dict[str, Any]] = []
+    for t in ts:
+        for st_idx, subtile in enumerate(_iterate_subtiles(window, t)):
+            for k in ks:
+                for m in ms:
+                    centers, idx = fast_quantize_tile(subtile, k, m, seed, sample_size=sample_size)
+                    errs = reconstruction_quantiles(subtile, centers[idx])
+                    rows.append(
+                        {"t": t, "subtile": st_idx, "k": k, "m": m, "n_pixels": int(t * t), **errs}
+                    )
+    return rows

@@ -344,7 +344,43 @@ Wait for the supervisor's metric decision before Phase 3.
 
 ---
 
-## 8. Phase 7 — Stretch goals (only with explicit authorisation)
+## 8. Interactive (t, K, m) bolt-on (current direction)
+
+> **Scope shift agreed with supervisor (2026-05-26):** different downstream tasks prefer different (t, K, m); a one-shot offline choice is the wrong target. The deliverable shifts from "tech note + memo" to a small **interactive service** that lets a user pick (t, K, m) for their own bbox. Runs LAN-close to the embeddings server, so there is **no client-side cache**. Phases 5 and 6 remain deferred.
+
+### Architecture
+
+Three modules, no native dependencies (NumPy + Flask only):
+
+- `tessera_vq.data` — bbox -> `(H, W, 128)` float32 land patch via zarr-where-covered + geotessera bbox fallback. Reuses Phase 1 work.
+- `tessera_vq.sweep` — vectorised NumPy k-means (Lloyd's iteration with one-hot `onehot.T @ x` update; sample-fit on `sample_size` pixels + full-tile assign in blocks). Cosine via L2-normalise. No FAISS, no native extensions.
+- `tessera_vq.server` — Flask + waitress with three endpoints.
+
+### Endpoints
+
+- `GET  /health` — liveness probe.
+- `POST /sweep` — body `{bbox, year?, ts?, ks?, ms?, sample_size?, seed?}`; returns one row per `(t, k, m, subtile)` with reconstruction quantiles `cos_p{10,50,90,99}` and `l2_p{10,50,90,99}`.
+- `POST /quantized` — *stub*: once `(t, k, m)` is chosen, stream codebook + index map per tile.
+
+### Tasks
+
+1. Vendor `zarr_utils`; implement `tessera_vq.data.read_region` (zarr_then_bbox). **Done.**
+2. Implement `tessera_vq.sweep` (sampled, vectorised k-means + reconstruction quantiles + `sweep_window`). **Done.**
+3. Implement `tessera_vq.server` with the three endpoints; small JSON contract. **Done (skeleton; `/quantized` still a stub).**
+4. Unit tests for `sweep`: synthetic cluster recovery, cosine path, `sweep_window` structure. **Done (`tests/test_sweep.py`).**
+5. **TODO** — fill in `/quantized` (codebook + indices payload + small client example).
+6. **TODO** — optional `/search` over codebooks across a region (DiskANN-style ANN index), if needed.
+
+### Validation
+
+- `uv run pytest -q` green (sweep tests + isotropy tests).
+- A `/sweep` call on a small UK bbox returns rows for every requested `(t, k, m)` with monotonic-in-k cosine reconstruction.
+
+### **HALT** — review the bolt-on skeleton; decide on the `/quantized` payload shape and whether to add a small browser UI on top before further work.
+
+---
+
+## 9. Phase 7 — Stretch goals (only with explicit authorisation)
 
 - arXiv:2405.12497 learned codebook baseline.
 - Adaptive k per tile via gap statistic or BIC.

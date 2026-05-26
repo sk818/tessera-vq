@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from scipy.stats import shapiro
+from scipy.stats import shapiro, wasserstein_distance
 
 # Default chunk size for the Epps-Pulley double sum (bounds memory, not result).
 _EP_BLOCK = 2048
@@ -56,3 +56,16 @@ def shapiro_wilk(samples_1d: npt.ArrayLike) -> tuple[float, float]:
     x = np.asarray(samples_1d, dtype=np.float64).ravel()
     res = shapiro(x)
     return float(res.statistic), float(res.pvalue)
+
+
+def wasserstein1_random_projections(
+    x: npt.NDArray[np.float32], y: npt.NDArray[np.float32], n_proj: int, seed: int
+) -> float:
+    """Mean 1-D Wasserstein-1 between ``x`` and ``y`` over ``n_proj`` random directions."""
+    rng = np.random.default_rng(seed)
+    dim = x.shape[1]
+    dirs = rng.standard_normal((n_proj, dim))
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    px = x.astype(np.float64) @ dirs.T
+    py = y.astype(np.float64) @ dirs.T
+    return float(np.mean([wasserstein_distance(px[:, j], py[:, j]) for j in range(n_proj)]))

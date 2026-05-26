@@ -36,6 +36,11 @@ dev = [
     "jupyterlab>=4.2",
     "quarto-cli>=1.5",
 ]
+# Interactive (t, K, m) sweep bolt-on. Runs LAN-close to the embeddings store.
+server = [
+    "flask>=3.0",
+    "waitress>=3.0",
+]
 
 # Explicit package declaration: the repo uses a flat layout with output dirs
 # (results/, figures/, logs/, notebooks/) that would otherwise confuse setuptools
@@ -63,6 +68,10 @@ max-args = 8
 [tool.mypy]
 strict = true
 ignore_missing_imports = true
+# Avoid version-skew issues between local mypy and the pre-commit mypy hook;
+# `[server]` extras aren't installed in CI's mypy env, so per-line ignores look
+# "unused" there but are needed under [server].
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
