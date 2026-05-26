@@ -177,6 +177,42 @@ def quantize_window_for_serving(
     )
 
 
+def quantize_window_residual_norms(
+    window: npt.NDArray[np.float32],
+    t: int,
+    k: int,
+    m: Distance,
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> npt.NDArray[np.float32]:
+    """Per-pixel L2 residual norms ``||x - c_{idx}||_2`` across all all-finite t x t tiles.
+
+    Returns a flat ``(n_pixels,)`` float32 array where ``n_pixels`` is the total count
+    of pixels across kept (all-finite) tiles. Useful for plotting a histogram of "how
+    off" each pixel's reconstruction is.
+
+    Note: for ``m="cosine"`` the centroids live on the unit sphere, so this L2 norm is
+    dominated by the original embedding magnitude rather than the angular error. For
+    cosine-as-direction diagnostics, prefer ``reconstruction_quantiles`` which also
+    reports cosine distance.
+    """
+    h, w, _ = window.shape
+    chunks: list[npt.NDArray[np.float32]] = []
+    for r in range(0, (h // t) * t, t):
+        for col in range(0, (w // t) * t, t):
+            tile = window[r : r + t, col : col + t]
+            if not np.isfinite(tile).all():
+                continue
+            tile_f = np.asarray(tile, dtype=np.float32)
+            centers, idx = fast_quantize_tile(tile_f, k, m, seed, sample_size=sample_size)
+            residual = tile_f - centers[idx]
+            chunks.append(np.linalg.norm(residual, axis=-1).astype(np.float32).ravel())
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks)
+
+
 def sweep_window(
     window: npt.NDArray[np.float32],
     ts: list[int],

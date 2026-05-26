@@ -85,6 +85,10 @@ Endpoints:
 - `GET  /health` — liveness probe.
 - `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`,
   returns an NPZ of `codebooks`, `indices`, `positions`, `meta`, `distance`.
+- `POST /residuals` — body `{bbox, t, k, m?, year?, n_bins?, sample_size?, seed?}`,
+  returns JSON `{n_pixels, bin_edges, counts, stats{mean, p10, p50, p90, p99}}` —
+  per-pixel L2-residual-norm histogram + summary, for plotting "how off is each
+  pixel" in a UI.
 
 The expensive exploration sweep is **not** exposed — call `sweep_window` as a
 library function on a locally-fetched mosaic instead. Both endpoints reject

@@ -5,6 +5,7 @@ import numpy as np
 from tessera_vq.sweep import (
     fast_quantize_tile,
     quantize_window_for_serving,
+    quantize_window_residual_norms,
     reconstruction_quantiles,
     sweep_window,
 )
@@ -71,6 +72,26 @@ def test_quantize_window_for_serving_shapes_and_dtypes() -> None:
     assert pos.dtype == np.int32
     # positions should cover the full (rows, cols) grid {(0,0),(0,1),(1,0),(1,1)}
     assert {tuple(p) for p in pos} == {(0, 0), (0, 1), (1, 0), (1, 1)}
+
+
+def test_quantize_window_residual_norms_shape_and_sanity() -> None:
+    """One float per pixel across kept tiles; small for k matching the cluster count."""
+    window = _three_cluster_tile(64, 64, 128, seed=6)
+    norms = quantize_window_residual_norms(window, t=32, k=4, m="euclidean", seed=42)
+    # 4 tiles of 32x32 = 4096 pixels total.
+    assert norms.shape == (4096,)
+    assert norms.dtype == np.float32
+    # noise has L2 magnitude ~ 0.1 * sqrt(128) ~= 1.13; reconstruction with k>=3 should
+    # leave each pixel residual at roughly that scale.
+    assert float(norms.mean()) < 1.5
+
+
+def test_quantize_window_residual_norms_skips_nan_tiles() -> None:
+    """Tiles containing NaN are dropped from the residual norm pool."""
+    window = _three_cluster_tile(64, 64, 128, seed=7).copy()
+    window[:32, :32, 0] = np.nan
+    norms = quantize_window_residual_norms(window, t=32, k=4, m="euclidean", seed=42)
+    assert norms.shape == (3 * 32 * 32,)
 
 
 def test_quantize_window_for_serving_skips_nan_tiles() -> None:

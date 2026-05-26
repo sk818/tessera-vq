@@ -75,6 +75,29 @@ class VQTessera:
         bounds = (lon - 0.05, lat - 0.05, lon + 0.05, lat + 0.05)
         return self.fetch_mosaic_for_region(bounds, year=year)
 
+    def fetch_residual_histogram(
+        self,
+        bbox: tuple[float, float, float, float],
+        year: int = 2024,
+        n_bins: int = 50,
+    ) -> dict[str, Any]:
+        """Per-pixel L2-residual-norm histogram + summary for the bolt-on's chosen (t, k, m).
+
+        Returns ``{n_pixels, bin_edges, counts, stats}``. Useful for plotting a "how off
+        is each pixel" histogram in a UI. *Not* in geotessera; additive only.
+        """
+        payload: dict[str, Any] = {
+            "bbox": list(bbox),
+            "year": int(year),
+            "t": self.t,
+            "k": self.k,
+            "m": self.m,
+            "n_bins": int(n_bins),
+        }
+        body = self._post("/residuals", payload)
+        result: dict[str, Any] = json.loads(body)
+        return result
+
     def _post(self, path: str, payload: dict[str, Any]) -> bytes:
         """POST JSON to the bolt-on; return the raw response body."""
         req = urllib.request.Request(

@@ -33,7 +33,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.data import read_region
-from tessera_vq.sweep import Distance, quantize_window_for_serving
+from tessera_vq.sweep import Distance, quantize_window_for_serving, quantize_window_residual_norms
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,65 @@ def quantized() -> Response:
         distance=np.asarray(m),
     )
     return Response(buf.getvalue(), mimetype="application/octet-stream")
+
+
+@app.post("/residuals")  # type: ignore
+def residuals() -> Response:  # noqa: PLR0911
+    """Return a per-pixel L2-residual-norm histogram + summary for a chosen (t, k, m).
+
+    Body: ``{bbox, t, k, m?, year?, n_bins?, sample_size?, seed?}``. Response JSON:
+    ``{n_pixels, bin_edges[n+1], counts[n], stats{mean, p10, p50, p90, p99}}``.
+    """
+    body: dict[str, Any] = cast("dict[str, Any]", request.get_json(force=True))
+    bbox = tuple(float(v) for v in body["bbox"])
+    if len(bbox) != 4:  # noqa: PLR2004
+        return _bad_request("bbox must be [lon0, lat0, lon1, lat1]")
+    too_big = _check_bbox_size(bbox)
+    if too_big:
+        return _bad_request(too_big, code=413)
+    if "t" not in body or "k" not in body:
+        return _bad_request("missing required 't' and/or 'k'")
+    t = int(body["t"])
+    k = int(body["k"])
+    if t <= 0 or k <= 0:
+        return _bad_request("'t' and 'k' must be positive")
+    m: Distance = cast("Distance", body.get("m", "euclidean"))
+    year = int(body.get("year", 2024))
+    n_bins = max(2, int(body.get("n_bins", 50)))
+    sample_size = int(body.get("sample_size", 2000))
+    seed = int(body.get("seed", 42))
+    mosaic, path = read_region(bbox, year)
+    if mosaic is None:
+        return _bad_request("no embeddings available for bbox", code=404)
+    norms = quantize_window_residual_norms(mosaic, t, k, m, seed, sample_size=sample_size)
+    logger.info(
+        "residuals bbox=%s year=%d t=%d k=%d m=%s path=%s n_pixels=%d n_bins=%d",
+        bbox,
+        year,
+        t,
+        k,
+        m,
+        path,
+        norms.size,
+        n_bins,
+    )
+    if norms.size == 0:
+        return jsonify({"n_pixels": 0, "bin_edges": [], "counts": [], "stats": {}})
+    counts, edges = np.histogram(norms, bins=n_bins)
+    return jsonify(
+        {
+            "n_pixels": int(norms.size),
+            "bin_edges": edges.tolist(),
+            "counts": counts.tolist(),
+            "stats": {
+                "mean": float(norms.mean()),
+                "p10": float(np.quantile(norms, 0.1)),
+                "p50": float(np.quantile(norms, 0.5)),
+                "p90": float(np.quantile(norms, 0.9)),
+                "p99": float(np.quantile(norms, 0.99)),
+            },
+        }
+    )
 
 
 def _bad_request(message: str, *, code: int = 400) -> Response:
