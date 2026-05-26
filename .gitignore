@@ -34,3 +34,6 @@ Thumbs.db
 # Local config overrides
 .env
 .env.local
+
+# Private hand-off docs (not for the public repo)
+docs/tee-integration.md
