@@ -52,11 +52,24 @@ codebooks, indices, positions = quantize_window_for_serving(
 # codebooks: (n_tiles, k_eff, 128) float32
 # indices:   (n_tiles, t, t) uint8/16
 # positions: (n_tiles, 2) int32  -- tile (row, col) in the bbox grid
+
+# 3) Or two-stage Residual VQ for lower reconstruction error
+#    (euclidean only; trades extra log2(k2) bits/pixel for lower distortion)
+from tessera_vq.sweep import rvq_quantize_window_for_serving, rvq_reconstruct_tile
+
+cbs1, idx1, cbs2, idx2, positions = rvq_quantize_window_for_serving(
+    mosaic, t=64, k1=256, k2=256, m="euclidean"
+)
+# reconstruct any tile i as cbs1[i][idx1[i]] + cbs2[i][idx2[i]]
 ```
 
 K-means is a vectorised NumPy Lloyd implementation (sample-fit then
 memory-bounded full-tile assign), no native dependencies. Cosine distance is
 implemented as euclidean k-means on L2-normalised inputs.
+
+For RVQ, stage 2 is just `fast_quantize_tile` run on the residual — if you want
+to sweep `k2` over a cached residual without redoing stage 1, compute the
+residual once and call `fast_quantize_tile(residual, k2, ...)` directly.
 
 ## Plug-compatible client (drop-in for `GeoTessera`)
 
@@ -66,12 +79,23 @@ store, point `VQTessera` at it:
 ```python
 from tessera_vq.client import VQTessera   # drop-in for geotessera.GeoTessera
 
+# Single-level VQ
 gt = VQTessera("http://your-host:8000", t=64, k=16, m="cosine")
+mosaic, transform, crs = gt.fetch_mosaic_for_region(bbox, year=2024)
+
+# Two-stage RVQ — pass k2 (euclidean only)
+gt = VQTessera("http://your-host:8000", t=64, k=256, m="euclidean", k2=256)
 mosaic, transform, crs = gt.fetch_mosaic_for_region(bbox, year=2024)
 ```
 
 Same `(mosaic, transform, crs)` return shape as `GeoTessera.fetch_mosaic_for_region`,
-so existing pipelines that consume `GeoTessera` need a one-line swap.
+so existing pipelines that consume `GeoTessera` need a one-line swap. The client
+also exposes a histogram diagnostic:
+
+```python
+hist = gt.fetch_residual_histogram(bbox, year=2024, n_bins=50)
+# {n_pixels, bin_edges, counts, stats{mean, p10, p50, p90, p99}}
+```
 
 ## Optional self-hosted server
 
