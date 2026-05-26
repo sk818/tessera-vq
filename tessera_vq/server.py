@@ -37,6 +37,7 @@ from tessera_vq.sweep import (
     Distance,
     quantize_window_for_serving,
     quantize_window_residual_norms,
+    quantize_window_residual_norms_rvq,
     rvq_quantize_window_for_serving,
 )
 
@@ -170,10 +171,12 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
 
 
 @app.post("/residuals")  # type: ignore
-def residuals() -> Response:  # noqa: PLR0911
-    """Return a per-pixel L2-residual-norm histogram + summary for a chosen (t, k, m).
+def residuals() -> Response:  # noqa: PLR0911, PLR0912
+    """Return a per-pixel L2-residual-norm histogram + summary.
 
-    Body: ``{bbox, t, k, m?, year?, n_bins?, sample_size?, seed?}``. Response JSON:
+    Body: ``{bbox, t, k, k2?, m?, year?, n_bins?, sample_size?, seed?}``. If ``k2`` is
+    omitted the residual is for single-level VQ ``c[idx]``; if ``k2`` is given the
+    residual is for two-stage RVQ ``c1[idx1] + c2[idx2]`` (euclidean only). Response:
     ``{n_pixels, bin_edges[n+1], counts[n], stats{mean, p10, p50, p90, p99}}``.
     """
     body: dict[str, Any] = cast("dict[str, Any]", request.get_json(force=True))
@@ -187,8 +190,10 @@ def residuals() -> Response:  # noqa: PLR0911
         return _bad_request("missing required 't' and/or 'k'")
     t = int(body["t"])
     k = int(body["k"])
-    if t <= 0 or k <= 0:
-        return _bad_request("'t' and 'k' must be positive")
+    k2_raw = body.get("k2")
+    k2 = int(k2_raw) if k2_raw is not None else None
+    if t <= 0 or k <= 0 or (k2 is not None and k2 <= 0):
+        return _bad_request("'t', 'k' (and 'k2' when given) must be positive")
     m: Distance = cast("Distance", body.get("m", "euclidean"))
     year = int(body.get("year", 2024))
     n_bins = max(2, int(body.get("n_bins", 50)))
@@ -197,13 +202,22 @@ def residuals() -> Response:  # noqa: PLR0911
     mosaic, path = read_region(bbox, year)
     if mosaic is None:
         return _bad_request("no embeddings available for bbox", code=404)
-    norms = quantize_window_residual_norms(mosaic, t, k, m, seed, sample_size=sample_size)
+    if k2 is None:
+        norms = quantize_window_residual_norms(mosaic, t, k, m, seed, sample_size=sample_size)
+    else:
+        try:
+            norms = quantize_window_residual_norms_rvq(
+                mosaic, t, k, k2, m, seed, sample_size=sample_size
+            )
+        except NotImplementedError as exc:
+            return _bad_request(str(exc))
     logger.info(
-        "residuals bbox=%s year=%d t=%d k=%d m=%s path=%s n_pixels=%d n_bins=%d",
+        "residuals bbox=%s year=%d t=%d k=%d k2=%s m=%s path=%s n_pixels=%d n_bins=%d",
         bbox,
         year,
         t,
         k,
+        k2,
         m,
         path,
         norms.size,

@@ -361,7 +361,7 @@ Three modules, no native dependencies (NumPy + Flask only):
 - `GET  /health` — liveness probe.
 - `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`; returns an **NPZ** (mimicking geotessera's numpy-on-the-wire format) with arrays `codebooks (n_tiles, k_eff, 128) float32`, `indices (n_tiles, t, t) uint8/uint16`, `positions (n_tiles, 2) int32`, plus small `meta`/`distance` arrays. `n_tiles` excludes NaN-containing tiles.
 - `POST /quantized_rvq` — body `{bbox, t, k1, k2, m?, year?, sample_size?, seed?}`; **Residual VQ** variant (euclidean only). Returns NPZ with `codebooks1/codebooks2`, `indices1/indices2`, `positions`, `meta=[t, k1, k2, year, H, W]`, `distance`. Reconstruction: `codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]`. Trades `log₂(k₂)` extra bits/pixel for substantially lower reconstruction error.
-- `POST /residuals` — body `{bbox, t, k, m?, year?, n_bins?, sample_size?, seed?}`; per-pixel L2-residual-norm histogram + summary for the chosen `(t, k, m)` (single-stage).
+- `POST /residuals` — body `{bbox, t, k, k2?, m?, year?, n_bins?, sample_size?, seed?}`; per-pixel L2-residual-norm histogram + summary. If `k2` is omitted, residual is for single-level VQ; if `k2` is given, residual is for two-stage RVQ (euclidean only).
 
 The exploration `sweep_window` is deliberately **not** an HTTP endpoint — it's a library call on a locally-fetched mosaic, so the CPU cost stays with the caller. The server only runs the chosen `(t, k, m)`.
 

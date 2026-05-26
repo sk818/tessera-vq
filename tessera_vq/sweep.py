@@ -330,6 +330,39 @@ def quantize_window_residual_norms(
     return np.concatenate(chunks)
 
 
+def quantize_window_residual_norms_rvq(
+    window: npt.NDArray[np.float32],
+    t: int,
+    k1: int,
+    k2: int,
+    m: Distance = "euclidean",
+    seed: int = 42,
+    *,
+    sample_size: int = 2000,
+) -> npt.NDArray[np.float32]:
+    """Per-pixel L2 residual norms after two-stage RVQ reconstruction.
+
+    For each kept tile, computes ``||x - (c1[idx1] + c2[idx2])||_2`` per pixel and
+    concatenates across all all-finite tiles. Euclidean only (matches ``rvq_quantize_tile``).
+    """
+    h, w, _ = window.shape
+    chunks: list[npt.NDArray[np.float32]] = []
+    for r in range(0, (h // t) * t, t):
+        for col in range(0, (w // t) * t, t):
+            tile = window[r : r + t, col : col + t]
+            if not np.isfinite(tile).all():
+                continue
+            tile_f = np.asarray(tile, dtype=np.float32)
+            cb1, idx1, cb2, idx2 = rvq_quantize_tile(
+                tile_f, k1, k2, m, seed, sample_size=sample_size
+            )
+            residual = tile_f - (cb1[idx1] + cb2[idx2])
+            chunks.append(np.linalg.norm(residual, axis=-1).astype(np.float32).ravel())
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks)
+
+
 def sweep_window(
     window: npt.NDArray[np.float32],
     ts: list[int],

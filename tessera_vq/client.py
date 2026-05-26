@@ -115,6 +115,8 @@ class VQTessera:
             "m": self.m,
             "n_bins": int(n_bins),
         }
+        if self.k2 is not None:
+            payload["k2"] = self.k2
         body = self._post("/residuals", payload)
         result: dict[str, Any] = json.loads(body)
         return result

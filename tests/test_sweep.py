@@ -7,6 +7,7 @@ from tessera_vq.sweep import (
     fast_quantize_tile,
     quantize_window_for_serving,
     quantize_window_residual_norms,
+    quantize_window_residual_norms_rvq,
     reconstruction_quantiles,
     rvq_quantize_tile,
     rvq_quantize_window_for_serving,
@@ -112,6 +113,16 @@ def test_rvq_quantize_tile_rejects_cosine() -> None:
     tile = _three_cluster_tile(16, 16, 32, seed=11)
     with pytest.raises(NotImplementedError, match="euclidean"):
         rvq_quantize_tile(tile, k1=4, k2=4, m="cosine", seed=42)
+
+
+def test_quantize_window_residual_norms_rvq_smaller_than_single_stage() -> None:
+    """RVQ residual norms (mean) should be no larger than single-stage at the same k1."""
+    window = _three_cluster_tile(32, 32, 128, seed=13)
+    single = quantize_window_residual_norms(window, t=32, k=4, m="euclidean", seed=42)
+    rvq = quantize_window_residual_norms_rvq(window, t=32, k1=4, k2=4, m="euclidean", seed=42)
+    assert single.shape == (1024,)
+    assert rvq.shape == (1024,)
+    assert float(rvq.mean()) <= float(single.mean())
 
 
 def test_rvq_quantize_window_for_serving_shapes() -> None:

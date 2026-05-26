@@ -95,6 +95,8 @@ also exposes a histogram diagnostic:
 ```python
 hist = gt.fetch_residual_histogram(bbox, year=2024, n_bins=50)
 # {n_pixels, bin_edges, counts, stats{mean, p10, p50, p90, p99}}
+# If the client was constructed with k2 set, the histogram reflects the
+# two-stage RVQ residual; otherwise the single-level VQ residual.
 ```
 
 ## Optional self-hosted server
@@ -109,10 +111,12 @@ Endpoints:
 - `GET  /health` — liveness probe.
 - `POST /quantized` — body `{bbox, t, k, m?, year?, sample_size?, seed?}`,
   returns an NPZ of `codebooks`, `indices`, `positions`, `meta`, `distance`.
-- `POST /residuals` — body `{bbox, t, k, m?, year?, n_bins?, sample_size?, seed?}`,
+- `POST /residuals` — body `{bbox, t, k, k2?, m?, year?, n_bins?, sample_size?, seed?}`,
   returns JSON `{n_pixels, bin_edges, counts, stats{mean, p10, p50, p90, p99}}` —
   per-pixel L2-residual-norm histogram + summary, for plotting "how off is each
-  pixel" in a UI.
+  pixel" in a UI. If `k2` is omitted, the residual is for single-level VQ; if `k2`
+  is given, it's the residual after two-stage RVQ reconstruction
+  (`x − (c1[idx1] + c2[idx2])`, euclidean only).
 - `POST /quantized_rvq` — body `{bbox, t, k1, k2, m?, year?, sample_size?, seed?}`
   for **two-stage Residual VQ** (euclidean only). Returns an NPZ with two codebooks
   + two index maps per tile; reconstruction is
