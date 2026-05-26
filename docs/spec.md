@@ -368,7 +368,7 @@ Three modules, no native dependencies (NumPy + Flask only):
 2. Implement `tessera_vq.sweep` (sampled, vectorised k-means + reconstruction quantiles + `sweep_window`). **Done.**
 3. Implement `tessera_vq.server` with the three endpoints; small JSON contract for `/sweep`, NPZ for `/quantized`. **Done.**
 4. Unit tests for `sweep`: synthetic cluster recovery, cosine path, `sweep_window` structure, `quantize_window_for_serving` shapes + NaN handling. **Done (`tests/test_sweep.py`).**
-5. **TODO** — small client example (decode the `/quantized` NPZ; reconstruct any pixel as `codebooks[i][indices[i, r, c]]`).
+5. **Plug-compatible Python client.** `tessera_vq.client.VQTessera` is a drop-in subset of `geotessera.GeoTessera` — `fetch_mosaic_for_region(bbox, year, target_crs="EPSG:4326") -> (mosaic, transform, crs)` and `fetch_embedding(lon, lat, year)`. Wraps the `/quantized` NPZ and rebuilds the full `(H, W, 128)` float32 mosaic + an `affine.Affine` for EPSG:4326. **Done (`tessera_vq/client.py`, `tests/test_client.py`).**
 6. **TODO** — optional `/search` over codebooks across a region (DiskANN-style ANN index), if needed.
 
 ### Validation

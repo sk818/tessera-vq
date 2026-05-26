@@ -4051,6 +4051,7 @@ name = "tessera-vq"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "affine" },
     { name = "geotessera" },
     { name = "hilbertcurve" },
     { name = "joblib" },
@@ -4087,6 +4088,7 @@ server = [
 
 [package.metadata]
 requires-dist = [
+    { name = "affine", specifier = ">=2.4" },
     { name = "flask", marker = "extra == 'server'", specifier = ">=3.0" },
     { name = "geotessera", specifier = ">=0.8" },
     { name = "hilbertcurve", specifier = ">=2.0" },

@@ -31,3 +31,20 @@ uv run pytest
 uv run ruff check .
 uv run mypy tessera_vq scripts
 ```
+
+## Interactive (t, K, m) bolt-on
+
+The bolt-on lives in `tessera_vq.server` (Flask + waitress; install with `pip install -e .[server]`). Run it LAN-close to the embeddings store: `uv run python -m tessera_vq.server`. Endpoints: `GET /health`, `POST /sweep` (rate-distortion table), `POST /quantized` (NPZ of codebooks + index maps). See `docs/spec.md` §8.
+
+For downstream code, `tessera_vq.client.VQTessera` is a plug-compatible drop-in for `geotessera.GeoTessera`:
+
+```python
+from tessera_vq.client import VQTessera
+
+gt = VQTessera(server_url="http://michael:8000", t=64, k=16, m="cosine")
+mosaic, transform, crs = gt.fetch_mosaic_for_region(
+    (0.145, 52.045, 0.155, 52.055), year=2024
+)
+```
+
+Same `(mosaic, transform, crs)` return shape as `GeoTessera.fetch_mosaic_for_region`.
