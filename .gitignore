@@ -14,6 +14,9 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# geotessera local downloads (non-zarr path) — never commit
+global_0.1_degree*/
+
 # Outputs
 results/
 logs/

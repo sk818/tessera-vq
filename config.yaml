@@ -158,6 +158,11 @@ phase1:
   n_directions: 200
   alpha: 0.01
   near_collapsed_variance_ratio: 0.01   # flag dims with var < this × median
+  # Per-direction subsample for the normality tests: Shapiro-Wilk is unreliable for
+  # n > 5000 and Epps-Pulley is O(n^2), so test on a manageable subsample per direction.
+  normality_subsample: 5000
+  # Monte-Carlo Gaussian replicates to derive the Epps-Pulley rejection threshold.
+  ep_mc_reps: 200
 
 # -----------------------------------------------------------------------------
 # Phase 2 — reconstruction sweep
