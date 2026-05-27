@@ -4,4 +4,4 @@ Library code for the compression study. Phase-by-phase implementation lives in t
 modules below and is driven by the entry points in ``scripts/``. See ``docs/spec.md``.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
