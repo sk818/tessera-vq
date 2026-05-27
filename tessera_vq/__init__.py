@@ -14,6 +14,7 @@ from tessera_vq.client import (
     NoCoverageError,
     QuantizedStructure,
     VQTessera,
+    reconstruct_from_structure,
 )
 
 __version__ = "0.3.0"
@@ -24,4 +25,5 @@ __all__ = [
     "QuantizedStructure",
     "VQTessera",
     "__version__",
+    "reconstruct_from_structure",
 ]

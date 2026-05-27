@@ -16,8 +16,8 @@ from tessera_vq.client import (
     QuantizedStructure,
     VQTessera,
     _reconstruct,
-    _reconstruct_from_structure,
     _structure_from_npz,
+    reconstruct_from_structure,
 )
 
 
@@ -164,7 +164,7 @@ def test_reconstruct_from_structure_raises_on_all_nan_mosaic() -> None:
     # full_h=16, t=32 -> out_h = (16//32)*32 = 0 -> 0-sized mosaic dim
     struct = _structure_from_npz(_make_npz(t=32, full_h=16, full_w=16), bbox)
     with pytest.raises(NoCoverageError):
-        _reconstruct_from_structure(struct)
+        reconstruct_from_structure(struct)
 
 
 def test_reconstruct_rvq_round_trip_shape() -> None:

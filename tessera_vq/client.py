@@ -64,10 +64,17 @@ class QuantizedStructure:
 
     ``positions`` are ``(row, col)`` indices into the bbox tile-grid (NOT UTM or world
     coordinates): pixel ``(0, 0)`` of tile ``i`` sits at ``(positions[i, 0] * tile_size,
-    positions[i, 1] * tile_size)`` inside the EPSG:4326 mosaic of shape ``mosaic_shape``.
-    The reprojected mosaic itself is not returned — callers reconstruct it from this
-    structure if they need pixels, or pass the structure straight through to a storage
-    format if they don't.
+    positions[i, 1] * tile_size)`` inside the EPSG:4326 mosaic. The reprojected mosaic
+    itself is not returned — callers reconstruct it via :func:`reconstruct_from_structure`
+    if they need pixels, or pass the structure straight through to a storage format if
+    they don't.
+
+    ``mosaic_shape`` is the **full** reprojected EPSG:4326 mosaic shape ``(H, W)`` as
+    returned by ``read_region``, *before* tile-multiple truncation. The reconstructed
+    output is ``((H // tile_size) * tile_size, (W // tile_size) * tile_size, 128)``;
+    pixel size is ``(bbox_span_lon / W, bbox_span_lat / H)`` (i.e. divides by the
+    *full* shape, not the truncated one). Use :func:`reconstruct_from_structure` if you
+    want pixels + transform without re-deriving the math yourself.
     """
 
     codebooks1: npt.NDArray[np.float32]
@@ -127,7 +134,7 @@ class VQTessera:
         quantized tiles for the requested region/params (see the module docstring).
         """
         struct = self.fetch_quantized_structure(bbox, year=year, target_crs=target_crs)
-        return _reconstruct_from_structure(struct)
+        return reconstruct_from_structure(struct)
 
     def fetch_quantized_structure(
         self,
@@ -284,14 +291,21 @@ def _structure_from_npz(
     )
 
 
-def _reconstruct_from_structure(
+def reconstruct_from_structure(
     struct: QuantizedStructure,
 ) -> tuple[npt.NDArray[np.float32], Affine, str]:
-    """Rebuild ``(H, W, 128)`` float32 from a :class:`QuantizedStructure` in EPSG:4326.
+    """Rebuild ``(H, W, 128)`` float32 + affine + crs from a :class:`QuantizedStructure`.
 
-    Uncovered tiles stay NaN. Raises :class:`NoCoverageError` if the structure has zero
-    tiles or if the reconstructed mosaic is entirely NaN (i.e. every candidate tile got
-    NaN-filtered server-side).
+    Returned shape is ``((full_h // t) * t, (full_w // t) * t, 128)`` where
+    ``(full_h, full_w) = struct.mosaic_shape``; uncovered tiles stay NaN. The affine
+    transform places pixel ``(0, 0)`` at the bbox's top-left and uses pixel size
+    ``(bbox_span / full_dim)`` (divides by the *full* mosaic shape, not the truncated
+    output shape — see :class:`QuantizedStructure` for why). CRS is ``"EPSG:4326"``.
+
+    Raises :class:`NoCoverageError` if the structure has zero tiles, if the truncated
+    output would be 0-sized, or if the reconstructed mosaic is entirely NaN. Callers
+    should prefer this helper over re-implementing the math so they stay aligned with
+    ``fetch_mosaic_for_region``.
     """
     n = int(struct.positions.shape[0])
     if n == 0:
@@ -341,6 +355,6 @@ def _reconstruct(
 ) -> tuple[npt.NDArray[np.float32], Affine, str]:
     """Thin wrapper kept for backwards-compatible imports: decode + reconstruct.
 
-    Equivalent to ``_reconstruct_from_structure(_structure_from_npz(npz_bytes, bbox))``.
+    Equivalent to ``reconstruct_from_structure(_structure_from_npz(npz_bytes, bbox))``.
     """
-    return _reconstruct_from_structure(_structure_from_npz(npz_bytes, bbox))
+    return reconstruct_from_structure(_structure_from_npz(npz_bytes, bbox))
