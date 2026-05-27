@@ -57,7 +57,7 @@ def health() -> Response:
 
 
 @app.post("/quantized")  # type: ignore
-def quantized() -> Response:
+def quantized() -> Response:  # noqa: PLR0911
     """Return per-tile codebooks + index maps as NPZ for the chosen (t, k, m).
 
     Body: ``{bbox, t, k, m?, year?, sample_size?, seed?}``. Response body is an NPZ with
@@ -97,6 +97,8 @@ def quantized() -> Response:
         path,
         positions.shape[0],
     )
+    if positions.shape[0] == 0:
+        return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
     buf = io.BytesIO()
     np.savez(
         buf,
@@ -156,6 +158,8 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
         path,
         positions.shape[0],
     )
+    if positions.shape[0] == 0:
+        return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
     buf = io.BytesIO()
     np.savez(
         buf,
@@ -247,6 +251,16 @@ def _bad_request(message: str, *, code: int = 400) -> Response:
     response = jsonify({"error": message})
     response.status_code = code
     return response
+
+
+def _no_tiles_message(mosaic_shape: tuple[int, ...], t: int) -> str:
+    """Diagnostic for the 422 returned when no all-finite t x t tile fits the region."""
+    h, w = int(mosaic_shape[0]), int(mosaic_shape[1])
+    return (
+        f"no all-finite t={t} tile fits the reprojected region ({w}x{h} px); "
+        "either t is larger than the region, or every candidate tile contains NaN "
+        "(e.g. from reprojection edges). Try a smaller t or a larger bbox."
+    )
 
 
 def _bbox_size_km(bbox: tuple[float, ...]) -> tuple[float, float]:
