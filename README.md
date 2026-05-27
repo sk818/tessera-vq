@@ -18,9 +18,9 @@ This repository provides:
 ## Install
 
 ```bash
-pip install "tessera-vq @ git+https://github.com/sk818/tessera-vq.git@v0.2.0"
+pip install "tessera-vq @ git+https://github.com/sk818/tessera-vq.git@v0.3.0"
 # or, for the server too:
-pip install "tessera-vq[server] @ git+https://github.com/sk818/tessera-vq.git@v0.2.0"
+pip install "tessera-vq[server] @ git+https://github.com/sk818/tessera-vq.git@v0.3.0"
 ```
 
 Requires Python ≥ 3.12.
