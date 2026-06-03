@@ -55,10 +55,8 @@ from tessera_vq.phase3_sweep import (
 
 logger = logging.getLogger(__name__)
 
-TILE_SIZES: tuple[int, ...] = (16, 32, 64, 128, 256)
-K_VALUES: tuple[int, ...] = (64, 128, 256, 1024)
-WARMUP_TILE_SIZE = TILE_SIZES[0]
-WARMUP_K = K_VALUES[0]
+DEFAULT_TILE_SIZES: tuple[int, ...] = (16, 32)
+DEFAULT_K_VALUES: tuple[int, ...] = (64, 128, 256)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +68,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--year", type=int, default=2024)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out-dir", default="results/phase3")
+    p.add_argument(
+        "--tile-sizes",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_TILE_SIZES),
+        help="tile sizes in pixels (default: 16 32 -- the sweet-spot range from the pilot)",
+    )
+    p.add_argument(
+        "--k-values",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_K_VALUES),
+        help="codebook sizes for both RVQ stages (default: 64 128 256)",
+    )
     return p.parse_args()
 
 
@@ -95,9 +107,11 @@ def _run_sweep(
     edges_l2: npt.NDArray[np.float64],
     edges_cos: npt.NDArray[np.float64],
     seed: int,
+    tile_sizes: list[int],
+    k_values: list[int],
 ) -> list[dict[str, object]]:
     """Run the (t, k1, k2) sweep across all windows; return long-format rows."""
-    cells = [(t, k1, k2) for t in TILE_SIZES for k1 in K_VALUES for k2 in K_VALUES]
+    cells = [(t, k1, k2) for t in tile_sizes for k1 in k_values for k2 in k_values]
     logger.info(
         "sweeping %d (t,k1,k2) cells x %d bboxes = %d RVQ runs",
         len(cells),
@@ -149,7 +163,15 @@ def main() -> None:
 
     config_path = Path(args.config)
     bboxes = load_canonical_bboxes(config_path)[: args.n_bboxes]
-    logger.info("loaded %d canonical bboxes", len(bboxes))
+    tile_sizes: list[int] = list(args.tile_sizes)
+    k_values: list[int] = list(args.k_values)
+    logger.info(
+        "loaded %d canonical bboxes; grid: t=%s k=%s -> %d cells",
+        len(bboxes),
+        tile_sizes,
+        k_values,
+        len(tile_sizes) * len(k_values) ** 2,
+    )
 
     windows = _read_windows(bboxes, args.year)
     if not windows:
@@ -157,12 +179,15 @@ def main() -> None:
         sys.exit(1)
 
     # Warm-up: pick bin edges from the first window at the smallest (t, k1, k2).
-    warmup_l2, warmup_cos = rvq_errors(
-        windows[0][1], WARMUP_TILE_SIZE, WARMUP_K, WARMUP_K, args.seed
-    )
+    warmup_t = tile_sizes[0]
+    warmup_k = k_values[0]
+    warmup_l2, warmup_cos = rvq_errors(windows[0][1], warmup_t, warmup_k, warmup_k, args.seed)
     edges_l2, edges_cos = pick_bin_edges(warmup_l2, warmup_cos)
     logger.info(
-        "warm-up bin edges: L2=[%.3f..%.3f] (%d bins), cos=[%.4f..%.4f] (%d bins)",
+        "warm-up (t=%d, k1=k2=%d) bin edges: L2=[%.3f..%.3f] (%d bins), "
+        "cos=[%.4f..%.4f] (%d bins)",
+        warmup_t,
+        warmup_k,
         edges_l2[0],
         edges_l2[-1],
         N_BINS,
@@ -172,12 +197,13 @@ def main() -> None:
     )
 
     sweep_t0 = time.monotonic()
-    rows = _run_sweep(windows, edges_l2, edges_cos, args.seed)
+    rows = _run_sweep(windows, edges_l2, edges_cos, args.seed, tile_sizes, k_values)
     sweep_dt = time.monotonic() - sweep_t0
+    n_cells = len(tile_sizes) * len(k_values) ** 2
     logger.info(
         "sweep took %.1f s (%.2f s per (t,k1,k2) cell)",
         sweep_dt,
-        sweep_dt / (len(TILE_SIZES) * len(K_VALUES) ** 2),
+        sweep_dt / n_cells,
     )
 
     df = pd.DataFrame(rows)
