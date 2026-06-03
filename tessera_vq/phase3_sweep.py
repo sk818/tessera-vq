@@ -28,7 +28,6 @@ import pandas as pd
 from tessera_vq.sweep import rvq_quantize_window_for_serving
 
 N_BINS = 50
-WARMUP_P_LO = 1.0
 WARMUP_P_HI = 99.0
 
 
@@ -62,7 +61,9 @@ def rvq_errors(
         on = np.linalg.norm(orig, axis=-1)
         rn = np.linalg.norm(recon, axis=-1)
         denom = np.where((on > 0) & (rn > 0), on * rn, 1.0)
-        cos = 1.0 - (orig * recon).sum(axis=-1) / denom
+        # Cosine distance is defined as >= 0; float32 (orig*recon).sum() can round
+        # slightly above on*rn when recon == orig, yielding tiny negative values.
+        cos = np.maximum(1.0 - (orig * recon).sum(axis=-1) / denom, 0.0)
         l2_chunks.append(l2.ravel().astype(np.float32))
         cos_chunks.append(cos.ravel().astype(np.float32))
     return np.concatenate(l2_chunks), np.concatenate(cos_chunks)
@@ -73,29 +74,30 @@ def pick_bin_edges(
     cos: npt.NDArray[np.float32],
     *,
     n_bins: int = N_BINS,
-    p_lo: float = WARMUP_P_LO,
     p_hi: float = WARMUP_P_HI,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Pick frozen bin edges from a warm-up bbox's L2 and cosine errors.
 
-    Uses ``p_lo..p_hi`` percentiles (default 1-99) so a handful of outliers do
-    not stretch the range. Falls back to plausible defaults if a warm-up array
-    is empty.
+    Always anchors ``edges[0] = 0`` so cells with near-perfect reconstruction
+    (``k_eff = tile_area`` -> exact codebook -> per-pixel error ~ 0) fall into
+    bin 0 rather than the underflow slot. The upper edge uses the ``p_hi``
+    percentile (default 99) so a handful of outliers do not stretch the range.
+    Falls back to plausible defaults if a warm-up array is empty.
     """
     if l2.size == 0 or cos.size == 0:
         return (
             np.linspace(0.0, 30.0, n_bins + 1),
             np.linspace(0.0, 1.0, n_bins + 1),
         )
-    lo_l2, hi_l2 = np.percentile(l2, [p_lo, p_hi])
-    lo_cos, hi_cos = np.percentile(cos, [p_lo, p_hi])
-    if hi_l2 <= lo_l2:
-        hi_l2 = lo_l2 + 1.0
-    if hi_cos <= lo_cos:
-        hi_cos = lo_cos + 1e-3
+    hi_l2 = float(np.percentile(l2, p_hi))
+    hi_cos = float(np.percentile(cos, p_hi))
+    if hi_l2 <= 0.0:
+        hi_l2 = 1.0
+    if hi_cos <= 0.0:
+        hi_cos = 1e-3
     return (
-        np.linspace(float(lo_l2), float(hi_l2), n_bins + 1),
-        np.linspace(float(lo_cos), float(hi_cos), n_bins + 1),
+        np.linspace(0.0, hi_l2, n_bins + 1),
+        np.linspace(0.0, hi_cos, n_bins + 1),
     )
 
 

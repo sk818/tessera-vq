@@ -58,7 +58,7 @@ def test_rvq_errors_empty_when_all_tiles_filtered() -> None:
 
 
 def test_pick_bin_edges_shape_and_order() -> None:
-    """Edges have ``N_BINS + 1`` entries and are strictly increasing."""
+    """Edges have ``N_BINS + 1`` entries, are strictly increasing, anchored at 0."""
     rng = np.random.default_rng(2)
     l2 = rng.uniform(0.0, 10.0, size=10_000).astype(np.float32)
     cos = rng.uniform(0.0, 0.5, size=10_000).astype(np.float32)
@@ -67,6 +67,24 @@ def test_pick_bin_edges_shape_and_order() -> None:
     assert edges_cos.shape == (N_BINS + 1,)
     assert np.all(np.diff(edges_l2) > 0)
     assert np.all(np.diff(edges_cos) > 0)
+    assert edges_l2[0] == 0.0  # always anchored at 0 (perfect-reconstruction cells)
+    assert edges_cos[0] == 0.0
+
+
+def test_pick_bin_edges_anchors_at_zero_even_with_positive_p1() -> None:
+    """Even if every warm-up sample is large, edges[0] is still 0.
+
+    Regression: pilot run with edges[0] = 4.4e-08 (positive p1 of warm-up errors)
+    sent all exact-zero errors from k_eff = tile_area cells into overflow.
+    """
+    big_only = np.full(1000, 5.0, dtype=np.float32)
+    edges_l2, edges_cos = pick_bin_edges(big_only, big_only)
+    assert edges_l2[0] == 0.0
+    assert edges_cos[0] == 0.0
+    # An exact-zero error should now fall into bin 0 (counts > 0)
+    zeros = np.zeros(100, dtype=np.float32)
+    counts, _ = np.histogram(zeros, bins=edges_l2)
+    assert counts[0] == 100  # noqa: PLR2004
 
 
 def test_pick_bin_edges_handles_empty_warmup() -> None:
@@ -161,6 +179,6 @@ def test_end_to_end_smallest_cell() -> None:
     # density + overflow partitions pixels
     assert abs(float(d_l2.sum()) + of_l2 - 1.0) < 1e-9
     assert abs(float(d_cos.sum()) + of_cos - 1.0) < 1e-9
-    # Warm-up edges from p1..p99 -> overflow_frac in [0, 0.02 + a bit]
+    # edges anchored at 0..p99 -> overflow ~ 1% (only the top-1% tail)
     assert of_l2 < 0.03  # noqa: PLR2004
     assert of_cos < 0.03  # noqa: PLR2004
