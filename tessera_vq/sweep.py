@@ -230,6 +230,46 @@ def rvq_reconstruct_tile(
     )
 
 
+def rvq_per_tile_errors(
+    window: npt.NDArray[np.float32],
+    t: int,
+    codebooks1: npt.NDArray[np.float32],
+    indices1: npt.NDArray[np.integer[Any]],
+    codebooks2: npt.NDArray[np.float32],
+    indices2: npt.NDArray[np.integer[Any]],
+    positions: npt.NDArray[np.int32],
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+    """Mean per-tile L2 and cosine reconstruction error for already-quantised RVQ codes.
+
+    For each kept tile ``i`` (at ``positions[i]``), reconstructs
+    ``codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]`` and returns the
+    *mean over that tile's pixels* of the per-pixel L2 distance and cosine
+    distance. Returns two ``(n_tiles,)`` arrays aligned with ``positions``; empty
+    if no tiles were kept.
+
+    Works from precomputed codes rather than re-fitting RVQ, so an analysis pass
+    can reuse the codebooks from ``rvq_quantize_window_for_serving``. The per-pixel
+    formulas match ``phase3_sweep.rvq_errors`` (this just averages within a tile).
+    """
+    n = int(positions.shape[0])
+    if n == 0:
+        empty = np.zeros(0, np.float32)
+        return empty, empty
+    l2 = np.empty(n, np.float32)
+    cos = np.empty(n, np.float32)
+    for i in range(n):
+        r, c = int(positions[i, 0]), int(positions[i, 1])
+        orig = window[r * t : (r + 1) * t, c * t : (c + 1) * t]
+        recon = codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]
+        l2[i] = float(np.linalg.norm(orig - recon, axis=-1).mean())
+        on = np.linalg.norm(orig, axis=-1)
+        rn = np.linalg.norm(recon, axis=-1)
+        denom = np.where((on > 0) & (rn > 0), on * rn, 1.0)
+        cd = np.maximum(1.0 - (orig * recon).sum(axis=-1) / denom, 0.0)
+        cos[i] = float(cd.mean())
+    return l2, cos
+
+
 def rvq_quantize_window_for_serving(
     window: npt.NDArray[np.float32],
     t: int,

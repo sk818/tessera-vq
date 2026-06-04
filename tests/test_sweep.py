@@ -3,17 +3,43 @@
 import numpy as np
 import pytest
 
+from tessera_vq.phase3_sweep import rvq_errors
 from tessera_vq.sweep import (
     fast_quantize_tile,
     quantize_window_for_serving,
     quantize_window_residual_norms,
     quantize_window_residual_norms_rvq,
     reconstruction_quantiles,
+    rvq_per_tile_errors,
     rvq_quantize_tile,
     rvq_quantize_window_for_serving,
     rvq_reconstruct_tile,
     sweep_window,
 )
+
+
+def test_rvq_per_tile_errors_match_flat_per_pixel_means() -> None:
+    """Per-tile mean errors must equal the flat per-pixel errors grouped by tile."""
+    rng = np.random.default_rng(7)
+    window = rng.standard_normal((64, 96, 128)).astype(np.float32)
+    t, k1, k2 = 32, 64, 64
+    cb1, idx1, cb2, idx2, pos = rvq_quantize_window_for_serving(window, t, k1, k2, "euclidean", 42)
+    l2_tile, cos_tile = rvq_per_tile_errors(window, t, cb1, idx1, cb2, idx2, pos)
+    flat_l2, flat_cos = rvq_errors(window, t=t, k1=k1, k2=k2, seed=42)
+    n_tiles = pos.shape[0]
+    px = flat_l2.size // n_tiles  # equal-sized tiles -> contiguous per-tile blocks
+    assert l2_tile.shape == (n_tiles,)
+    assert np.allclose(l2_tile, flat_l2.reshape(n_tiles, px).mean(axis=1), rtol=1e-4, atol=1e-4)
+    assert np.allclose(cos_tile, flat_cos.reshape(n_tiles, px).mean(axis=1), rtol=1e-4, atol=1e-4)
+
+
+def test_rvq_per_tile_errors_empty_window() -> None:
+    """An all-NaN window keeps no tiles and yields empty per-tile error arrays."""
+    window = np.full((32, 32, 128), np.nan, dtype=np.float32)
+    cb1, idx1, cb2, idx2, pos = rvq_quantize_window_for_serving(window, 32, 64, 64, "euclidean", 42)
+    l2, cos = rvq_per_tile_errors(window, 32, cb1, idx1, cb2, idx2, pos)
+    assert l2.size == 0
+    assert cos.size == 0
 
 
 def _three_cluster_tile(h: int, w: int, dim: int, seed: int) -> np.ndarray:
