@@ -7,9 +7,9 @@ runs under the package's core deps without the ``[server]`` extra.
 
 Conventions:
 
-- "Errors" are per-pixel scalars: L2 distance ``||orig - recon||_2`` and
-  cosine distance ``1 - cos(orig, recon)`` between a 128-d Tessera embedding
-  and its RVQ reconstruction ``codebook1[idx1] + codebook2[idx2]``.
+- "Errors" are per-pixel scalars: the L2 distance ``||orig - recon||_2`` between
+  a 128-d Tessera embedding and its RVQ reconstruction
+  ``codebook1[idx1] + codebook2[idx2]``. (Cosine was dropped from the sweep.)
 - Histograms are normalised to *density* (counts / n_pixels), so per-bbox
   histograms sum to ``(1 - overflow_frac)`` and are comparable across bboxes
   of differing native shapes.
@@ -37,68 +37,47 @@ def rvq_errors(
     k1: int,
     k2: int,
     seed: int,
-) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
-    """Run euclidean RVQ on ``window``; return flat per-pixel L2 and cosine errors.
+) -> npt.NDArray[np.float32]:
+    """Run euclidean RVQ on ``window``; return flat per-pixel L2 errors.
 
     Pixels in NaN-filtered tiles are excluded (those tiles have no codebook).
-    Returns ``(l2, cos)`` arrays of equal length; empty if every candidate
-    tile was NaN-filtered.
+    Returns an empty array if every candidate tile was NaN-filtered.
     """
     cb1, idx1, cb2, idx2, positions = rvq_quantize_window_for_serving(
         window, t, k1, k2, "euclidean", seed
     )
     if positions.shape[0] == 0:
-        empty = np.zeros(0, np.float32)
-        return empty, empty
+        return np.zeros(0, np.float32)
     l2_chunks: list[npt.NDArray[np.float32]] = []
-    cos_chunks: list[npt.NDArray[np.float32]] = []
     for i in range(int(positions.shape[0])):
         r, c = int(positions[i, 0]), int(positions[i, 1])
         orig = window[r * t : (r + 1) * t, c * t : (c + 1) * t]
         recon = cb1[i][idx1[i]] + cb2[i][idx2[i]]
-        diff = orig - recon
-        l2 = np.linalg.norm(diff, axis=-1)
-        on = np.linalg.norm(orig, axis=-1)
-        rn = np.linalg.norm(recon, axis=-1)
-        denom = np.where((on > 0) & (rn > 0), on * rn, 1.0)
-        # Cosine distance is defined as >= 0; float32 (orig*recon).sum() can round
-        # slightly above on*rn when recon == orig, yielding tiny negative values.
-        cos = np.maximum(1.0 - (orig * recon).sum(axis=-1) / denom, 0.0)
+        l2 = np.linalg.norm(orig - recon, axis=-1)
         l2_chunks.append(l2.ravel().astype(np.float32))
-        cos_chunks.append(cos.ravel().astype(np.float32))
-    return np.concatenate(l2_chunks), np.concatenate(cos_chunks)
+    return np.concatenate(l2_chunks)
 
 
 def pick_bin_edges(
     l2: npt.NDArray[np.float32],
-    cos: npt.NDArray[np.float32],
     *,
     n_bins: int = N_BINS,
     p_hi: float = WARMUP_P_HI,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Pick frozen bin edges from a warm-up bbox's L2 and cosine errors.
+) -> npt.NDArray[np.float64]:
+    """Pick frozen L2 bin edges from a warm-up bbox's per-pixel errors.
 
     Always anchors ``edges[0] = 0`` so cells with near-perfect reconstruction
     (``k_eff = tile_area`` -> exact codebook -> per-pixel error ~ 0) fall into
     bin 0 rather than the underflow slot. The upper edge uses the ``p_hi``
     percentile (default 99) so a handful of outliers do not stretch the range.
-    Falls back to plausible defaults if a warm-up array is empty.
+    Falls back to a plausible default if the warm-up array is empty.
     """
-    if l2.size == 0 or cos.size == 0:
-        return (
-            np.linspace(0.0, 30.0, n_bins + 1),
-            np.linspace(0.0, 1.0, n_bins + 1),
-        )
+    if l2.size == 0:
+        return np.linspace(0.0, 30.0, n_bins + 1)
     hi_l2 = float(np.percentile(l2, p_hi))
-    hi_cos = float(np.percentile(cos, p_hi))
     if hi_l2 <= 0.0:
         hi_l2 = 1.0
-    if hi_cos <= 0.0:
-        hi_cos = 1e-3
-    return (
-        np.linspace(0.0, hi_l2, n_bins + 1),
-        np.linspace(0.0, hi_cos, n_bins + 1),
-    )
+    return np.linspace(0.0, hi_l2, n_bins + 1)
 
 
 def hist_density(

@@ -24,13 +24,12 @@ def test_rvq_per_tile_errors_match_flat_per_pixel_means() -> None:
     window = rng.standard_normal((64, 96, 128)).astype(np.float32)
     t, k1, k2 = 32, 64, 64
     cb1, idx1, cb2, idx2, pos = rvq_quantize_window_for_serving(window, t, k1, k2, "euclidean", 42)
-    l2_tile, cos_tile = rvq_per_tile_errors(window, t, cb1, idx1, cb2, idx2, pos)
-    flat_l2, flat_cos = rvq_errors(window, t=t, k1=k1, k2=k2, seed=42)
+    l2_tile, _cos_tile = rvq_per_tile_errors(window, t, cb1, idx1, cb2, idx2, pos)
+    flat_l2 = rvq_errors(window, t=t, k1=k1, k2=k2, seed=42)
     n_tiles = pos.shape[0]
     px = flat_l2.size // n_tiles  # equal-sized tiles -> contiguous per-tile blocks
     assert l2_tile.shape == (n_tiles,)
     assert np.allclose(l2_tile, flat_l2.reshape(n_tiles, px).mean(axis=1), rtol=1e-4, atol=1e-4)
-    assert np.allclose(cos_tile, flat_cos.reshape(n_tiles, px).mean(axis=1), rtol=1e-4, atol=1e-4)
 
 
 def test_rvq_per_tile_errors_empty_window() -> None:

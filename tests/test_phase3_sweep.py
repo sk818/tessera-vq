@@ -30,45 +30,37 @@ def _synthetic_window(h: int = 128, w: int = 128, seed: int = 0) -> np.ndarray:
 
 
 def test_rvq_errors_finite_and_nonnegative() -> None:
-    """Per-pixel L2 and cosine errors are finite and >= 0 on a finite window."""
+    """Per-pixel L2 errors are finite and >= 0 on a finite window."""
     window = _synthetic_window(seed=0)
-    l2, cos = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
+    l2 = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
     assert l2.size > 0
-    assert l2.size == cos.size
     assert np.all(np.isfinite(l2))
-    assert np.all(np.isfinite(cos))
     assert float(l2.min()) >= 0.0
-    assert float(cos.min()) >= -1e-6  # tolerate tiny float noise around zero
 
 
 def test_rvq_errors_count_matches_covered_tiles() -> None:
-    """All pixels in covered (all-finite) tiles contribute one (l2, cos) entry."""
+    """All pixels in covered (all-finite) tiles contribute one L2 entry."""
     window = _synthetic_window(h=64, w=64, seed=1)  # 4 tiles at t=32
-    l2, _cos = rvq_errors(window, t=32, k1=64, k2=64, seed=42)
+    l2 = rvq_errors(window, t=32, k1=64, k2=64, seed=42)
     # All 4 tiles are finite -> 4 * 32 * 32 = 4096 pixels
     assert l2.size == 4 * 32 * 32
 
 
 def test_rvq_errors_empty_when_all_tiles_filtered() -> None:
-    """A window of all-NaN tiles -> empty error arrays (no failure)."""
+    """A window of all-NaN tiles -> empty error array (no failure)."""
     window = np.full((32, 32, 128), np.nan, dtype=np.float32)
-    l2, cos = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
+    l2 = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
     assert l2.size == 0
-    assert cos.size == 0
 
 
 def test_pick_bin_edges_shape_and_order() -> None:
     """Edges have ``N_BINS + 1`` entries, are strictly increasing, anchored at 0."""
     rng = np.random.default_rng(2)
     l2 = rng.uniform(0.0, 10.0, size=10_000).astype(np.float32)
-    cos = rng.uniform(0.0, 0.5, size=10_000).astype(np.float32)
-    edges_l2, edges_cos = pick_bin_edges(l2, cos)
+    edges_l2 = pick_bin_edges(l2)
     assert edges_l2.shape == (N_BINS + 1,)
-    assert edges_cos.shape == (N_BINS + 1,)
     assert np.all(np.diff(edges_l2) > 0)
-    assert np.all(np.diff(edges_cos) > 0)
     assert edges_l2[0] == 0.0  # always anchored at 0 (perfect-reconstruction cells)
-    assert edges_cos[0] == 0.0
 
 
 def test_pick_bin_edges_anchors_at_zero_even_with_positive_p1() -> None:
@@ -78,9 +70,8 @@ def test_pick_bin_edges_anchors_at_zero_even_with_positive_p1() -> None:
     sent all exact-zero errors from k_eff = tile_area cells into overflow.
     """
     big_only = np.full(1000, 5.0, dtype=np.float32)
-    edges_l2, edges_cos = pick_bin_edges(big_only, big_only)
+    edges_l2 = pick_bin_edges(big_only)
     assert edges_l2[0] == 0.0
-    assert edges_cos[0] == 0.0
     # An exact-zero error should now fall into bin 0 (counts > 0)
     zeros = np.zeros(100, dtype=np.float32)
     counts, _ = np.histogram(zeros, bins=edges_l2)
@@ -88,12 +79,10 @@ def test_pick_bin_edges_anchors_at_zero_even_with_positive_p1() -> None:
 
 
 def test_pick_bin_edges_handles_empty_warmup() -> None:
-    """Empty warm-up arrays -> sensible default ranges, not crash."""
-    edges_l2, edges_cos = pick_bin_edges(np.zeros(0, np.float32), np.zeros(0, np.float32))
+    """Empty warm-up array -> sensible default range, not crash."""
+    edges_l2 = pick_bin_edges(np.zeros(0, np.float32))
     assert edges_l2.shape == (N_BINS + 1,)
-    assert edges_cos.shape == (N_BINS + 1,)
     assert edges_l2[0] == 0.0 and edges_l2[-1] > 0.0
-    assert edges_cos[0] == 0.0 and edges_cos[-1] > 0.0
 
 
 def test_hist_density_sums_to_1_minus_overflow() -> None:
@@ -148,7 +137,6 @@ def test_to_wide_one_row_per_cell() -> None:
     edges = np.linspace(0.0, 1.0, N_BINS + 1)
     densities = [np.full(N_BINS, 1.0 / N_BINS)]
     long_rows = aggregate_long("l2", edges, densities, [0.0], t=16, k1=64, k2=64)
-    long_rows += aggregate_long("cos", edges, densities, [0.0], t=16, k1=64, k2=64)
     df = pd.DataFrame(long_rows)
     wide = to_wide(df, "l2")
     assert len(wide) == 1
@@ -172,13 +160,10 @@ def test_to_wide_one_row_per_cell() -> None:
 def test_end_to_end_smallest_cell() -> None:
     """Synthetic 128x128 window through smallest (t,k1,k2): sums match expectations."""
     window = _synthetic_window(seed=4)
-    l2, cos = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
-    edges_l2, edges_cos = pick_bin_edges(l2, cos)
+    l2 = rvq_errors(window, t=16, k1=64, k2=64, seed=42)
+    edges_l2 = pick_bin_edges(l2)
     d_l2, of_l2 = hist_density(l2, edges_l2)
-    d_cos, of_cos = hist_density(cos, edges_cos)
     # density + overflow partitions pixels
     assert abs(float(d_l2.sum()) + of_l2 - 1.0) < 1e-9
-    assert abs(float(d_cos.sum()) + of_cos - 1.0) < 1e-9
     # edges anchored at 0..p99 -> overflow ~ 1% (only the top-1% tail)
     assert of_l2 < 0.03  # noqa: PLR2004
-    assert of_cos < 0.03  # noqa: PLR2004

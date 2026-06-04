@@ -3,9 +3,9 @@
 Streams ``--n-bboxes`` canonical 10 km bounding boxes sampled **at random**
 (seeded by ``--seed``) from ``config/canonical_bboxes.yaml``, **one at a time**,
 runs a fully-crossed ``(tile_size, k1, k2)`` RVQ sweep on each (via
-``tessera_vq.sweep.rvq_quantize_window_for_serving``), computes per-pixel L2 and
-cosine reconstruction errors, histograms each ``(bbox, t, k1, k2)`` result
-against frozen bin edges (auto-picked from the first readable sampled bbox), then
+``tessera_vq.sweep.rvq_quantize_window_for_serving``), computes per-pixel L2
+reconstruction errors, histograms each ``(bbox, t, k1, k2)`` result against
+frozen bin edges (auto-picked from the first readable sampled bbox), then
 aggregates across bboxes into mean +- sd density. Only the **first bin**
 (``[0, edges[1])`` -- the near-zero-error fraction) is written out.
 
@@ -15,10 +15,9 @@ density histograms (a few KB total) accumulate. The earlier version appended
 every window to a list and was OOM-killed ~half-way through the 100-bbox run on
 a 48 GB machine -- this version peaks at one window plus the accumulator.
 
-Robustness: the long CSV (and its two wide derivatives) is rewritten after
-*every* bbox as a checkpoint, so an interruption at bbox N still leaves a valid
-aggregate over the N-1 bboxes already processed. There is no end-of-run-only
-write step.
+Robustness: the long CSV (and its wide derivative) is rewritten after *every*
+bbox as a checkpoint, so an interruption at bbox N still leaves a valid aggregate
+over the N-1 bboxes already processed. There is no end-of-run-only write step.
 
 Outputs (in ``--out-dir``, default ``results/phase3/``):
 
@@ -26,7 +25,6 @@ Outputs (in ``--out-dir``, default ``results/phase3/``):
   bin_high, mean_density, sd_density, overflow_frac_mean, overflow_frac_sd,
   n_bboxes + provenance columns (git_sha, seed, timestamp_utc, config_hash).
 - ``{tag}_l2.csv`` (wide derived): one row per (t, k1, k2), first-bin L2 columns.
-- ``{tag}_cos.csv`` (wide derived): same shape for cosine.
 
 Run::
 
@@ -80,8 +78,6 @@ class _CellAccum:
 
     l2_dens: list[npt.NDArray[np.float64]] = field(default_factory=list)
     l2_of: list[float] = field(default_factory=list)
-    cos_dens: list[npt.NDArray[np.float64]] = field(default_factory=list)
-    cos_of: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -131,40 +127,34 @@ def _accumulate(
     cells: list[Cell],
     window: npt.NDArray[np.float32],
     edges_l2: npt.NDArray[np.float64],
-    edges_cos: npt.NDArray[np.float64],
     seed: int,
 ) -> None:
-    """Sweep every cell on one window; append this bbox's density + overflow to acc."""
+    """Sweep every cell on one window; append this bbox's L2 density + overflow to acc."""
     for cell in cells:
         t, k1, k2 = cell
-        l2, cos = rvq_errors(window, t, k1, k2, seed)
+        l2 = rvq_errors(window, t, k1, k2, seed)
         d_l2, o_l2 = hist_density(l2, edges_l2)
-        d_cos, o_cos = hist_density(cos, edges_cos)
         a = acc[cell]
         a.l2_dens.append(d_l2)
         a.l2_of.append(o_l2)
-        a.cos_dens.append(d_cos)
-        a.cos_of.append(o_cos)
 
 
 def _accum_to_rows(
     acc: dict[Cell, _CellAccum],
     cells: list[Cell],
     edges_l2: npt.NDArray[np.float64],
-    edges_cos: npt.NDArray[np.float64],
 ) -> list[dict[str, object]]:
     """Aggregate the accumulator into long rows, keeping only the first bin.
 
-    We emit a single row per (cell, metric): bin 0, ``[0, edges[1])``. That bin
-    holds the fraction of pixels reconstructed to near-zero error, which is the
-    headline quality number for the sweep; the remaining bins are dropped.
+    We emit a single row per cell: L2 bin 0, ``[0, edges[1])``. That bin holds the
+    fraction of pixels reconstructed to near-zero error, which is the headline
+    quality number for the sweep; the remaining bins are dropped.
     """
     rows: list[dict[str, object]] = []
     for cell in cells:
         t, k1, k2 = cell
         a = acc[cell]
         rows.extend(aggregate_long("l2", edges_l2, a.l2_dens, a.l2_of, t, k1, k2))
-        rows.extend(aggregate_long("cos", edges_cos, a.cos_dens, a.cos_of, t, k1, k2))
     return [r for r in rows if r["bin_index"] == 0]
 
 
@@ -174,16 +164,14 @@ def _write_outputs(
     out_dir: Path,
     tag: str,
 ) -> Path:
-    """Write the long CSV (source of truth) + per-metric wide CSVs; return long path."""
+    """Write the long CSV (source of truth) + the wide L2 CSV; return long path."""
     df = pd.DataFrame(rows)
     for col, val in prov.items():
         df[col] = val
     out_dir.mkdir(parents=True, exist_ok=True)
     long_path = out_dir / f"{tag}.csv"
     df.to_csv(long_path, index=False)
-    for metric in ("l2", "cos"):
-        wide = to_wide(df, metric)
-        wide.to_csv(out_dir / f"{tag}_{metric}.csv", index=False)
+    to_wide(df, "l2").to_csv(out_dir / f"{tag}_l2.csv", index=False)
     return long_path
 
 
@@ -219,7 +207,6 @@ def _stream_sweep(
     """
     acc: dict[Cell, _CellAccum] = {c: _CellAccum() for c in cells}
     edges_l2: npt.NDArray[np.float64] | None = None
-    edges_cos: npt.NDArray[np.float64] | None = None
     n_read = 0
     n_total = len(bboxes)
     for i, b in enumerate(bboxes, start=1):
@@ -233,16 +220,14 @@ def _stream_sweep(
         logger.info(
             "[%d/%d] read %-28s via %-4s -> %s (%.1fs)", i, n_total, b.name, path, mosaic.shape, dt
         )
-        if edges_l2 is None or edges_cos is None:
-            wl2, wcos = rvq_errors(mosaic, tile_sizes[0], k_values[0], k_values[0], cfg.seed)
-            edges_l2, edges_cos = pick_bin_edges(wl2, wcos)
-            logger.info(
-                "  warm-up bin edges: L2=[0..%.3f], cos=[0..%.5f]", edges_l2[-1], edges_cos[-1]
-            )
+        if edges_l2 is None:
+            wl2 = rvq_errors(mosaic, tile_sizes[0], k_values[0], k_values[0], cfg.seed)
+            edges_l2 = pick_bin_edges(wl2)
+            logger.info("  warm-up bin edges: L2=[0..%.3f]", edges_l2[-1])
         st0 = time.monotonic()
-        _accumulate(acc, cells, mosaic, edges_l2, edges_cos, cfg.seed)
+        _accumulate(acc, cells, mosaic, edges_l2, cfg.seed)
         del mosaic  # free ~1.5 GB before the next read
-        rows = _accum_to_rows(acc, cells, edges_l2, edges_cos)
+        rows = _accum_to_rows(acc, cells, edges_l2)
         long_path = _write_outputs(rows, cfg.prov, cfg.out_dir, cfg.tag)
         logger.info(
             "  swept %d cells (%.1fs); checkpoint %d bbox(es) -> %s",
