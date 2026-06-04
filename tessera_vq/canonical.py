@@ -12,6 +12,7 @@ validates this invariant on load.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -22,6 +23,8 @@ import yaml
 
 from tessera_vq import zarr_utils as _zarr_utils
 from tessera_vq.data import _read_window_native, _window_bounds, read_region
+
+logger = logging.getLogger(__name__)
 
 # Vendored zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
 # Matches the pattern used in tessera_vq/data.py.
@@ -96,7 +99,19 @@ def read_canonical_window(
         if patch is not None:
             return patch, "zarr"
     bounds = _window_bounds(bbox.lon, bbox.lat, window_px)
-    mosaic, _read_path = read_region(bounds, year)
+    try:
+        mosaic, _read_path = read_region(bounds, year)
+    except Exception as exc:  # noqa: BLE001
+        # geotessera 0.8 raises ValueError when no tiles exist for the bbox/year
+        # rather than returning (None, ...). Treat that the same as "no data".
+        logger.warning(
+            "read_region failed for %s at (%.3f, %.3f): %s; treating as unavailable",
+            bbox.name,
+            bbox.lon,
+            bbox.lat,
+            exc,
+        )
+        return None, "unavailable"
     if mosaic is None:
         return None, "unavailable"
     return mosaic.astype(np.float32, copy=False), "bbox"
