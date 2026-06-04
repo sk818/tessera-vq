@@ -1,26 +1,36 @@
 """Phase 3 RVQ sweep entry point.
 
-Streams the first ``--n-bboxes`` canonical 10 km bounding boxes (defined in
-``config/canonical_bboxes.yaml``), runs a fully-crossed ``(tile_size, k1, k2)``
-RVQ sweep on each (via ``tessera_vq.sweep.rvq_quantize_window_for_serving``),
-computes per-pixel L2 and cosine reconstruction errors, histograms each
-``(bbox, t, k1, k2)`` result against frozen bin edges (auto-picked from a
-warm-up bbox), then aggregates across bboxes into mean +- sd density per bin.
+Streams ``--n-bboxes`` canonical 10 km bounding boxes sampled **at random**
+(seeded by ``--seed``) from ``config/canonical_bboxes.yaml``, **one at a time**,
+runs a fully-crossed ``(tile_size, k1, k2)`` RVQ sweep on each (via
+``tessera_vq.sweep.rvq_quantize_window_for_serving``), computes per-pixel L2 and
+cosine reconstruction errors, histograms each ``(bbox, t, k1, k2)`` result
+against frozen bin edges (auto-picked from the first readable sampled bbox), then
+aggregates across bboxes into mean +- sd density. Only the **first bin**
+(``[0, edges[1])`` -- the near-zero-error fraction) is written out.
+
+Memory: exactly one window is resident at a time. A bbox-fallback mosaic is
+~1.5 GB; it is freed (``del``) before the next read, and only the tiny per-cell
+density histograms (a few KB total) accumulate. The earlier version appended
+every window to a list and was OOM-killed ~half-way through the 100-bbox run on
+a 48 GB machine -- this version peaks at one window plus the accumulator.
+
+Robustness: the long CSV (and its two wide derivatives) is rewritten after
+*every* bbox as a checkpoint, so an interruption at bbox N still leaves a valid
+aggregate over the N-1 bboxes already processed. There is no end-of-run-only
+write step.
 
 Outputs (in ``--out-dir``, default ``results/phase3/``):
 
 - ``{tag}.csv`` (long, source of truth): t, k1, k2, metric, bin_index, bin_low,
   bin_high, mean_density, sd_density, overflow_frac_mean, overflow_frac_sd,
   n_bboxes + provenance columns (git_sha, seed, timestamp_utc, config_hash).
-- ``{tag}_l2.csv`` (wide derived): one row per (t, k1, k2), columns per L2 bin.
+- ``{tag}_l2.csv`` (wide derived): one row per (t, k1, k2), first-bin L2 columns.
 - ``{tag}_cos.csv`` (wide derived): same shape for cosine.
 
 Run::
 
     uv run python scripts/phase3_rvq_sweep.py --n-bboxes 5 --tag phase3_pilot
-
-HALT after the pilot: report bbox path usage (zarr vs bbox-fallback), wall-time,
-and a preview of the wide CSVs before extending to the full 100 bboxes.
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ import logging
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -40,12 +51,10 @@ import pandas as pd
 
 from tessera_vq.canonical import (
     CanonicalBbox,
-    PathChoice,
     load_canonical_bboxes,
     read_canonical_window,
 )
 from tessera_vq.phase3_sweep import (
-    N_BINS,
     aggregate_long,
     hist_density,
     pick_bin_edges,
@@ -55,8 +64,35 @@ from tessera_vq.phase3_sweep import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TILE_SIZES: tuple[int, ...] = (16, 32)
+DEFAULT_TILE_SIZES: tuple[int, ...] = (32, 64)
 DEFAULT_K_VALUES: tuple[int, ...] = (64, 128, 256)
+
+Cell = tuple[int, int, int]
+
+
+@dataclass
+class _CellAccum:
+    """Per-(t, k1, k2) cell: one density vector + overflow per processed bbox.
+
+    Holds only 50-float histograms, never the windows themselves, so the whole
+    accumulator across all cells stays in the low-MB range for 100 bboxes.
+    """
+
+    l2_dens: list[npt.NDArray[np.float64]] = field(default_factory=list)
+    l2_of: list[float] = field(default_factory=list)
+    cos_dens: list[npt.NDArray[np.float64]] = field(default_factory=list)
+    cos_of: list[float] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _RunCfg:
+    """Per-run knobs threaded through the streaming loop (keeps signatures small)."""
+
+    year: int
+    seed: int
+    prov: dict[str, str | int]
+    out_dir: Path
+    tag: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,7 +109,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs="+",
         default=list(DEFAULT_TILE_SIZES),
-        help="tile sizes in pixels (default: 16 32 -- the sweet-spot range from the pilot)",
+        help="tile sizes in pixels (default: 32 64)",
     )
     p.add_argument(
         "--k-values",
@@ -85,58 +121,70 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _read_windows(
-    bboxes: list[CanonicalBbox], year: int
-) -> list[tuple[CanonicalBbox, npt.NDArray[np.float32], PathChoice]]:
-    """Read each canonical bbox once; skip ones with no Tessera data."""
-    out: list[tuple[CanonicalBbox, npt.NDArray[np.float32], PathChoice]] = []
-    for b in bboxes:
-        t0 = time.monotonic()
-        mosaic, path = read_canonical_window(b, year)
-        dt = time.monotonic() - t0
-        if mosaic is None or path == "unavailable":
-            logger.warning("skip %s (%.1fs): no Tessera data available", b.name, dt)
-            continue
-        logger.info("read %-32s via %-4s -> shape=%s (%.1fs)", b.name, path, mosaic.shape, dt)
-        out.append((b, mosaic, path))
-    return out
+def _build_cells(tile_sizes: list[int], k_values: list[int]) -> list[Cell]:
+    """Fully-crossed ``(t, k1, k2)`` grid in deterministic order."""
+    return [(t, k1, k2) for t in tile_sizes for k1 in k_values for k2 in k_values]
 
 
-def _run_sweep(
-    windows: list[tuple[CanonicalBbox, npt.NDArray[np.float32], PathChoice]],
+def _accumulate(
+    acc: dict[Cell, _CellAccum],
+    cells: list[Cell],
+    window: npt.NDArray[np.float32],
     edges_l2: npt.NDArray[np.float64],
     edges_cos: npt.NDArray[np.float64],
     seed: int,
-    tile_sizes: list[int],
-    k_values: list[int],
+) -> None:
+    """Sweep every cell on one window; append this bbox's density + overflow to acc."""
+    for cell in cells:
+        t, k1, k2 = cell
+        l2, cos = rvq_errors(window, t, k1, k2, seed)
+        d_l2, o_l2 = hist_density(l2, edges_l2)
+        d_cos, o_cos = hist_density(cos, edges_cos)
+        a = acc[cell]
+        a.l2_dens.append(d_l2)
+        a.l2_of.append(o_l2)
+        a.cos_dens.append(d_cos)
+        a.cos_of.append(o_cos)
+
+
+def _accum_to_rows(
+    acc: dict[Cell, _CellAccum],
+    cells: list[Cell],
+    edges_l2: npt.NDArray[np.float64],
+    edges_cos: npt.NDArray[np.float64],
 ) -> list[dict[str, object]]:
-    """Run the (t, k1, k2) sweep across all windows; return long-format rows."""
-    cells = [(t, k1, k2) for t in tile_sizes for k1 in k_values for k2 in k_values]
-    logger.info(
-        "sweeping %d (t,k1,k2) cells x %d bboxes = %d RVQ runs",
-        len(cells),
-        len(windows),
-        len(cells) * len(windows),
-    )
+    """Aggregate the accumulator into long rows, keeping only the first bin.
+
+    We emit a single row per (cell, metric): bin 0, ``[0, edges[1])``. That bin
+    holds the fraction of pixels reconstructed to near-zero error, which is the
+    headline quality number for the sweep; the remaining bins are dropped.
+    """
     rows: list[dict[str, object]] = []
-    for cell_i, (t, k1, k2) in enumerate(cells, start=1):
-        densities_l2: list[npt.NDArray[np.float64]] = []
-        densities_cos: list[npt.NDArray[np.float64]] = []
-        overflows_l2: list[float] = []
-        overflows_cos: list[float] = []
-        for _b, window, _path in windows:
-            l2, cos = rvq_errors(window, t, k1, k2, seed)
-            d_l2, of_l2 = hist_density(l2, edges_l2)
-            d_cos, of_cos = hist_density(cos, edges_cos)
-            densities_l2.append(d_l2)
-            densities_cos.append(d_cos)
-            overflows_l2.append(of_l2)
-            overflows_cos.append(of_cos)
-        rows.extend(aggregate_long("l2", edges_l2, densities_l2, overflows_l2, t, k1, k2))
-        rows.extend(aggregate_long("cos", edges_cos, densities_cos, overflows_cos, t, k1, k2))
-        if cell_i % 10 == 0 or cell_i == len(cells):
-            logger.info("  cell %d/%d done (t=%d, k1=%d, k2=%d)", cell_i, len(cells), t, k1, k2)
-    return rows
+    for cell in cells:
+        t, k1, k2 = cell
+        a = acc[cell]
+        rows.extend(aggregate_long("l2", edges_l2, a.l2_dens, a.l2_of, t, k1, k2))
+        rows.extend(aggregate_long("cos", edges_cos, a.cos_dens, a.cos_of, t, k1, k2))
+    return [r for r in rows if r["bin_index"] == 0]
+
+
+def _write_outputs(
+    rows: list[dict[str, object]],
+    prov: dict[str, str | int],
+    out_dir: Path,
+    tag: str,
+) -> Path:
+    """Write the long CSV (source of truth) + per-metric wide CSVs; return long path."""
+    df = pd.DataFrame(rows)
+    for col, val in prov.items():
+        df[col] = val
+    out_dir.mkdir(parents=True, exist_ok=True)
+    long_path = out_dir / f"{tag}.csv"
+    df.to_csv(long_path, index=False)
+    for metric in ("l2", "cos"):
+        wide = to_wide(df, metric)
+        wide.to_csv(out_dir / f"{tag}_{metric}.csv", index=False)
+    return long_path
 
 
 def _provenance(config_path: Path, seed: int) -> dict[str, str | int]:
@@ -156,78 +204,111 @@ def _provenance(config_path: Path, seed: int) -> dict[str, str | int]:
     }
 
 
+def _stream_sweep(
+    bboxes: list[CanonicalBbox],
+    cells: list[Cell],
+    tile_sizes: list[int],
+    k_values: list[int],
+    cfg: _RunCfg,
+) -> int:
+    """Read -> sweep -> free, one bbox at a time; checkpoint the CSVs after each.
+
+    Bin edges are frozen from the first readable bbox at ``(tile_sizes[0],
+    k_values[0], k_values[0])`` and reused for every subsequent bbox. Returns the
+    number of bboxes actually processed (reads that returned data).
+    """
+    acc: dict[Cell, _CellAccum] = {c: _CellAccum() for c in cells}
+    edges_l2: npt.NDArray[np.float64] | None = None
+    edges_cos: npt.NDArray[np.float64] | None = None
+    n_read = 0
+    n_total = len(bboxes)
+    for i, b in enumerate(bboxes, start=1):
+        t0 = time.monotonic()
+        mosaic, path = read_canonical_window(b, cfg.year)
+        dt = time.monotonic() - t0
+        if mosaic is None or path == "unavailable":
+            logger.warning("[%d/%d] skip %-28s (%.1fs): no Tessera data", i, n_total, b.name, dt)
+            continue
+        n_read += 1
+        logger.info(
+            "[%d/%d] read %-28s via %-4s -> %s (%.1fs)", i, n_total, b.name, path, mosaic.shape, dt
+        )
+        if edges_l2 is None or edges_cos is None:
+            wl2, wcos = rvq_errors(mosaic, tile_sizes[0], k_values[0], k_values[0], cfg.seed)
+            edges_l2, edges_cos = pick_bin_edges(wl2, wcos)
+            logger.info(
+                "  warm-up bin edges: L2=[0..%.3f], cos=[0..%.5f]", edges_l2[-1], edges_cos[-1]
+            )
+        st0 = time.monotonic()
+        _accumulate(acc, cells, mosaic, edges_l2, edges_cos, cfg.seed)
+        del mosaic  # free ~1.5 GB before the next read
+        rows = _accum_to_rows(acc, cells, edges_l2, edges_cos)
+        long_path = _write_outputs(rows, cfg.prov, cfg.out_dir, cfg.tag)
+        logger.info(
+            "  swept %d cells (%.1fs); checkpoint %d bbox(es) -> %s",
+            len(cells),
+            time.monotonic() - st0,
+            n_read,
+            long_path,
+        )
+    return n_read
+
+
+def _sample_bboxes(all_bboxes: list[CanonicalBbox], n: int, seed: int) -> list[CanonicalBbox]:
+    """Pick ``n`` bboxes uniformly at random (no replacement), seeded for repeatability.
+
+    Returns them in ascending original-index order so the run log and the frozen
+    bin-edge warm-up bbox are deterministic for a given seed. If ``n`` >= the pool
+    size, returns all bboxes (still in original order).
+    """
+    if n >= len(all_bboxes):
+        return all_bboxes
+    rng = np.random.default_rng(seed)
+    idx = np.sort(rng.choice(len(all_bboxes), size=n, replace=False))
+    return [all_bboxes[int(i)] for i in idx]
+
+
 def main() -> None:
-    """Load -> read windows -> warm-up bin edges -> sweep -> write CSVs."""
+    """Load bboxes -> stream-sweep one at a time (checkpointing each) -> final log."""
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     config_path = Path(args.config)
-    bboxes = load_canonical_bboxes(config_path)[: args.n_bboxes]
+    bboxes = _sample_bboxes(load_canonical_bboxes(config_path), args.n_bboxes, args.seed)
     tile_sizes: list[int] = list(args.tile_sizes)
     k_values: list[int] = list(args.k_values)
+    cells = _build_cells(tile_sizes, k_values)
     logger.info(
-        "loaded %d canonical bboxes; grid: t=%s k=%s -> %d cells",
+        "sampled %d bboxes at random (seed=%d); grid t=%s k=%s -> %d cells; "
+        "streaming one bbox at a time",
         len(bboxes),
+        args.seed,
         tile_sizes,
         k_values,
-        len(tile_sizes) * len(k_values) ** 2,
+        len(cells),
     )
 
-    windows = _read_windows(bboxes, args.year)
-    if not windows:
-        logger.error("no readable bboxes; aborting")
+    cfg = _RunCfg(
+        year=args.year,
+        seed=args.seed,
+        prov=_provenance(config_path, args.seed),
+        out_dir=Path(args.out_dir),
+        tag=args.tag,
+    )
+    t0 = time.monotonic()
+    n_read = _stream_sweep(bboxes, cells, tile_sizes, k_values, cfg)
+    elapsed = time.monotonic() - t0
+    if n_read == 0:
+        logger.error("no readable bboxes; no output written")
         sys.exit(1)
-
-    # Warm-up: pick bin edges from the first window at the smallest (t, k1, k2).
-    warmup_t = tile_sizes[0]
-    warmup_k = k_values[0]
-    warmup_l2, warmup_cos = rvq_errors(windows[0][1], warmup_t, warmup_k, warmup_k, args.seed)
-    edges_l2, edges_cos = pick_bin_edges(warmup_l2, warmup_cos)
     logger.info(
-        "warm-up (t=%d, k1=k2=%d) bin edges: L2=[%.3f..%.3f] (%d bins), "
-        "cos=[%.4f..%.4f] (%d bins)",
-        warmup_t,
-        warmup_k,
-        edges_l2[0],
-        edges_l2[-1],
-        N_BINS,
-        edges_cos[0],
-        edges_cos[-1],
-        N_BINS,
+        "DONE: %d/%d bboxes processed in %.1f min; outputs in %s (tag=%s)",
+        n_read,
+        len(bboxes),
+        elapsed / 60,
+        cfg.out_dir,
+        cfg.tag,
     )
-
-    sweep_t0 = time.monotonic()
-    rows = _run_sweep(windows, edges_l2, edges_cos, args.seed, tile_sizes, k_values)
-    sweep_dt = time.monotonic() - sweep_t0
-    n_cells = len(tile_sizes) * len(k_values) ** 2
-    logger.info(
-        "sweep took %.1f s (%.2f s per (t,k1,k2) cell)",
-        sweep_dt,
-        sweep_dt / n_cells,
-    )
-
-    df = pd.DataFrame(rows)
-    prov = _provenance(config_path, args.seed)
-    for col, val in prov.items():
-        df[col] = val
-
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    long_path = out_dir / f"{args.tag}.csv"
-    df.to_csv(long_path, index=False)
-    logger.info("wrote long CSV: %s (%d rows)", long_path, len(df))
-
-    for metric in ("l2", "cos"):
-        wide = to_wide(df, metric)
-        wp = out_dir / f"{args.tag}_{metric}.csv"
-        wide.to_csv(wp, index=False)
-        logger.info("wrote wide %s CSV: %s (%d rows)", metric, wp, len(wide))
-
-    if len(windows) < 100:  # noqa: PLR2004
-        proj_min = sweep_dt / len(windows) * 100 / 60
-        logger.info(
-            "extrapolation to 100 bboxes: ~%.1f min (pilot: %.1f min)", proj_min, sweep_dt / 60
-        )
 
 
 if __name__ == "__main__":
