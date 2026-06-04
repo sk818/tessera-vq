@@ -2,7 +2,8 @@
 
 Streams ``--n-bboxes`` canonical 10 km bounding boxes sampled **at random**
 (seeded by ``--seed``) from ``config/canonical_bboxes.yaml``, **one at a time**,
-runs a fully-crossed ``(tile_size, k1, k2)`` RVQ sweep on each (via
+runs a ``(tile_size, k1, k2)`` RVQ sweep on each (restricted to ``k1 < k2`` -- a
+coarse stage-1 base plus a richer stage-2 residual; via
 ``tessera_vq.sweep.rvq_quantize_window_for_serving``), computes per-pixel L2
 reconstruction errors, histograms each ``(bbox, t, k1, k2)`` result against
 frozen bin edges (auto-picked from the first readable sampled bbox), then
@@ -63,7 +64,10 @@ from tessera_vq.phase3_sweep import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_TILE_SIZES: tuple[int, ...] = (32, 64)
-DEFAULT_K_VALUES: tuple[int, ...] = (64, 128, 256)
+# Stage 1 is a coarse (small-k1) base; stage 2 a richer (large-k2) residual. The
+# grid is restricted to k1 < k2; pairs with k1 >= k2 are dropped.
+DEFAULT_K1_VALUES: tuple[int, ...] = (16, 32, 64)
+DEFAULT_K2_VALUES: tuple[int, ...] = (128, 256, 512)
 
 Cell = tuple[int, int, int]
 
@@ -108,18 +112,25 @@ def parse_args() -> argparse.Namespace:
         help="tile sizes in pixels (default: 32 64)",
     )
     p.add_argument(
-        "--k-values",
+        "--k1-values",
         type=int,
         nargs="+",
-        default=list(DEFAULT_K_VALUES),
-        help="codebook sizes for both RVQ stages (default: 64 128 256)",
+        default=list(DEFAULT_K1_VALUES),
+        help="stage-1 (coarse base) codebook sizes (default: 16 32 64)",
+    )
+    p.add_argument(
+        "--k2-values",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_K2_VALUES),
+        help="stage-2 (residual) codebook sizes (default: 128 256 512)",
     )
     return p.parse_args()
 
 
-def _build_cells(tile_sizes: list[int], k_values: list[int]) -> list[Cell]:
-    """Fully-crossed ``(t, k1, k2)`` grid in deterministic order."""
-    return [(t, k1, k2) for t in tile_sizes for k1 in k_values for k2 in k_values]
+def _build_cells(tile_sizes: list[int], k1_values: list[int], k2_values: list[int]) -> list[Cell]:
+    """``(t, k1, k2)`` grid in deterministic order, restricted to ``k1 < k2``."""
+    return [(t, k1, k2) for t in tile_sizes for k1 in k1_values for k2 in k2_values if k1 < k2]
 
 
 def _accumulate(
@@ -195,20 +206,20 @@ def _provenance(config_path: Path, seed: int) -> dict[str, str | int]:
 def _stream_sweep(
     bboxes: list[CanonicalBbox],
     cells: list[Cell],
-    tile_sizes: list[int],
-    k_values: list[int],
+    warmup_cell: Cell,
     cfg: _RunCfg,
 ) -> int:
     """Read -> sweep -> free, one bbox at a time; checkpoint the CSVs after each.
 
-    Bin edges are frozen from the first readable bbox at ``(tile_sizes[0],
-    k_values[0], k_values[0])`` and reused for every subsequent bbox. Returns the
-    number of bboxes actually processed (reads that returned data).
+    Bin edges are frozen from the first readable bbox at ``warmup_cell`` (a valid
+    ``(t, k1, k2)`` with ``k1 < k2``) and reused for every subsequent bbox.
+    Returns the number of bboxes actually processed (reads that returned data).
     """
     acc: dict[Cell, _CellAccum] = {c: _CellAccum() for c in cells}
     edges_l2: npt.NDArray[np.float64] | None = None
     n_read = 0
     n_total = len(bboxes)
+    wt, wk1, wk2 = warmup_cell
     for i, b in enumerate(bboxes, start=1):
         t0 = time.monotonic()
         mosaic, path = read_canonical_window(b, cfg.year)
@@ -221,7 +232,7 @@ def _stream_sweep(
             "[%d/%d] read %-28s via %-4s -> %s (%.1fs)", i, n_total, b.name, path, mosaic.shape, dt
         )
         if edges_l2 is None:
-            wl2 = rvq_errors(mosaic, tile_sizes[0], k_values[0], k_values[0], cfg.seed)
+            wl2 = rvq_errors(mosaic, wt, wk1, wk2, cfg.seed)
             edges_l2 = pick_bin_edges(wl2)
             logger.info("  warm-up bin edges: L2=[0..%.3f]", edges_l2[-1])
         st0 = time.monotonic()
@@ -261,16 +272,25 @@ def main() -> None:
     config_path = Path(args.config)
     bboxes = _sample_bboxes(load_canonical_bboxes(config_path), args.n_bboxes, args.seed)
     tile_sizes: list[int] = list(args.tile_sizes)
-    k_values: list[int] = list(args.k_values)
-    cells = _build_cells(tile_sizes, k_values)
+    k1_values: list[int] = list(args.k1_values)
+    k2_values: list[int] = list(args.k2_values)
+    cells = _build_cells(tile_sizes, k1_values, k2_values)
+    if not cells:
+        logger.error(
+            "empty grid: no (k1, k2) pair satisfies k1 < k2 (k1=%s k2=%s)", k1_values, k2_values
+        )
+        sys.exit(1)
+    full = len(tile_sizes) * len(k1_values) * len(k2_values)
     logger.info(
-        "sampled %d bboxes at random (seed=%d); grid t=%s k=%s -> %d cells; "
-        "streaming one bbox at a time",
+        "sampled %d bboxes at random (seed=%d); grid t=%s k1=%s k2=%s -> %d cells "
+        "(%d dropped for k1>=k2); streaming one bbox at a time",
         len(bboxes),
         args.seed,
         tile_sizes,
-        k_values,
+        k1_values,
+        k2_values,
         len(cells),
+        full - len(cells),
     )
 
     cfg = _RunCfg(
@@ -281,7 +301,7 @@ def main() -> None:
         tag=args.tag,
     )
     t0 = time.monotonic()
-    n_read = _stream_sweep(bboxes, cells, tile_sizes, k_values, cfg)
+    n_read = _stream_sweep(bboxes, cells, cells[0], cfg)
     elapsed = time.monotonic() - t0
     if n_read == 0:
         logger.error("no readable bboxes; no output written")
