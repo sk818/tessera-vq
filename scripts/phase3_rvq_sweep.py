@@ -63,11 +63,12 @@ from tessera_vq.phase3_sweep import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TILE_SIZES: tuple[int, ...] = (32, 64)
+DEFAULT_TILE_SIZES: tuple[int, ...] = (32, 64, 128)
 # Stage 1 is a coarse (small-k1) base; stage 2 a richer (large-k2) residual. The
-# grid is restricted to k1 < k2; pairs with k1 >= k2 are dropped.
-DEFAULT_K1_VALUES: tuple[int, ...] = (16, 32, 64)
-DEFAULT_K2_VALUES: tuple[int, ...] = (128, 256, 512)
+# grid is restricted to k1 < k2 and k2 < t*t (degenerate cells dropped). k1/k2 are sized
+# so their indices bit-pack into 16 bits (2 B/px): 64=6b + 1024=10b, 128=7b + 512=9b.
+DEFAULT_K1_VALUES: tuple[int, ...] = (64, 128)
+DEFAULT_K2_VALUES: tuple[int, ...] = (512, 1024)
 
 Cell = tuple[int, int, int]
 
@@ -109,28 +110,35 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs="+",
         default=list(DEFAULT_TILE_SIZES),
-        help="tile sizes in pixels (default: 32 64)",
+        help="tile sizes in pixels (default: %(default)s)",
     )
     p.add_argument(
         "--k1-values",
         type=int,
         nargs="+",
         default=list(DEFAULT_K1_VALUES),
-        help="stage-1 (coarse base) codebook sizes (default: 16 32 64)",
+        help="stage-1 (coarse base) codebook sizes (default: %(default)s)",
     )
     p.add_argument(
         "--k2-values",
         type=int,
         nargs="+",
         default=list(DEFAULT_K2_VALUES),
-        help="stage-2 (residual) codebook sizes (default: 128 256 512)",
+        help="stage-2 (residual) codebook sizes (default: %(default)s)",
     )
     return p.parse_args()
 
 
 def _build_cells(tile_sizes: list[int], k1_values: list[int], k2_values: list[int]) -> list[Cell]:
-    """``(t, k1, k2)`` grid in deterministic order, restricted to ``k1 < k2``."""
-    return [(t, k1, k2) for t in tile_sizes for k1 in k1_values for k2 in k2_values if k1 < k2]
+    """``(t, k1, k2)`` grid in deterministic order.
+
+    Restricted to ``k1 < k2`` and to non-degenerate cells: ``k2 < t * t``. A cell
+    with ``k2 >= t * t`` would have ``k_eff = t * t`` (one residual code per pixel
+    -> near-perfect reconstruction at zero compression), so it is dropped.
+    """
+    return [
+        (t, k1, k2) for t in tile_sizes for k1 in k1_values for k2 in k2_values if k1 < k2 < t * t
+    ]
 
 
 def _accumulate(
@@ -277,13 +285,16 @@ def main() -> None:
     cells = _build_cells(tile_sizes, k1_values, k2_values)
     if not cells:
         logger.error(
-            "empty grid: no (k1, k2) pair satisfies k1 < k2 (k1=%s k2=%s)", k1_values, k2_values
+            "empty grid: no (t, k1, k2) satisfies k1 < k2 and k2 < t*t (t=%s k1=%s k2=%s)",
+            tile_sizes,
+            k1_values,
+            k2_values,
         )
         sys.exit(1)
     full = len(tile_sizes) * len(k1_values) * len(k2_values)
     logger.info(
         "sampled %d bboxes at random (seed=%d); grid t=%s k1=%s k2=%s -> %d cells "
-        "(%d dropped for k1>=k2); streaming one bbox at a time",
+        "(%d dropped for k1>=k2 or degenerate k2>=t*t); streaming one bbox at a time",
         len(bboxes),
         args.seed,
         tile_sizes,
