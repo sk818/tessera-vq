@@ -5,13 +5,14 @@ traversal + RLE, and confirms the stage-2 residual index (idx2) is ~incompressib
 For each sampled bbox it reads a ~12 km window, selects the most-finite tiles, runs
 two-stage RVQ (``tessera_vq.rvq_large``), and for every ``(t, k1, k2)`` cell records:
 
-- ``idx1_{row,morton,hilbert}_bpp`` -- bits/px of idx1 after that ordering + RLE
-  (conservative fixed-width run model; see ``tessera_vq.index_codec``);
-- ``idx1_raw_bpp`` = ceil(log2 k1), ``idx2_raw_bpp`` = ceil(log2 k2);
-- ``idx2_hilbert_bpp`` -- idx2 after Hilbert+RLE (should ~= raw: residual is white);
+- ``idx1_{row,morton,hilbert}_bytes`` -- bytes/px of the idx1 byte plane after that
+  ordering + byte-aligned RLE (see ``tessera_vq.index_codec``);
+- ``idx1_raw_bytes`` / ``idx2_raw_bytes`` -- the uncompressed byte planes (1 byte
+  each for k <= 256);
+- ``idx2_hilbert_bytes`` -- idx2 after Hilbert+RLE (should ~= raw: residual is white);
 - ``codebook_Bpx`` = (k1 + k2) * 128 / t^2 (1 byte/dim per code);
-- ``total_packed_Bpx`` (raw 16-bit index) and ``total_compressed_Bpx`` (best idx1
-  ordering + incompressible idx2), with compression ratios vs fp32/int8 raw.
+- ``total_packed_Bpx`` (both raw byte planes) and ``total_compressed_Bpx`` (best idx1
+  ordering + incompressible 1-byte idx2), with compression ratios vs fp32/int8 raw.
 
 Aggregated per cell as the mean across tiles. Streams one window at a time and
 checkpoints the provenance-tagged Parquet after every bbox.
@@ -42,8 +43,8 @@ from tessera_vq.tiling import extract_finite_tiles
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TILE_SIZES: tuple[int, ...] = (512, 768, 1024)
-DEFAULT_CONFIGS: tuple[str, ...] = ("64:1024", "128:512", "256:256")
+DEFAULT_TILE_SIZES: tuple[int, ...] = (512, 1024)
+DEFAULT_CONFIGS: tuple[str, ...] = ("20:256", "32:256", "64:256", "128:256")
 _ORDERINGS = ("row", "morton", "hilbert")
 
 Cell = tuple[int, int, int]
@@ -97,13 +98,13 @@ def _sample_bboxes(all_bboxes: list[CanonicalBbox], n: int, seed: int) -> list[C
 def _tile_index_metrics(
     idx1: npt.NDArray[np.int32], k1: int, idx2: npt.NDArray[np.int32], k2: int
 ) -> dict[str, float]:
-    """idx1 bits/px under each ordering + the idx2 (in)compressibility check."""
+    """idx1 bytes/px under each ordering + the idx2 (in)compressibility check."""
     out: dict[str, float] = {}
     for o in _ORDERINGS:
-        out[f"idx1_{o}_bpp"] = compress_index_map(idx1, k1, o).rle_bpp
-    out["idx1_raw_bpp"] = compress_index_map(idx1, k1, "row").raw_bpp
-    out["idx2_raw_bpp"] = compress_index_map(idx2, k2, "row").raw_bpp
-    out["idx2_hilbert_bpp"] = compress_index_map(idx2, k2, "hilbert").rle_bpp
+        out[f"idx1_{o}_bytes"] = compress_index_map(idx1, k1, o).rle_bytes_per_px
+    out["idx1_raw_bytes"] = compress_index_map(idx1, k1, "row").raw_bytes_per_px
+    out["idx2_raw_bytes"] = compress_index_map(idx2, k2, "row").raw_bytes_per_px
+    out["idx2_hilbert_bytes"] = compress_index_map(idx2, k2, "hilbert").rle_bytes_per_px
     return out
 
 
@@ -140,11 +141,11 @@ def _cell_row(cell: Cell, per_tile: list[dict[str, float]]) -> dict[str, float]:
     for key in per_tile[0]:
         row[key] = float(np.mean([m[key] for m in per_tile]))
     cb_bpx = (k1 + k2) * 128 / (t * t)
-    idx1_best = min(row[f"idx1_{o}_bpp"] for o in _ORDERINGS)
+    idx1_best = min(row[f"idx1_{o}_bytes"] for o in _ORDERINGS)
     row["codebook_Bpx"] = cb_bpx
-    row["idx1_best_bpp"] = idx1_best
-    row["total_packed_Bpx"] = cb_bpx + (row["idx1_raw_bpp"] + row["idx2_raw_bpp"]) / 8.0
-    row["total_compressed_Bpx"] = cb_bpx + idx1_best / 8.0 + row["idx2_raw_bpp"] / 8.0
+    row["idx1_best_bytes"] = idx1_best
+    row["total_packed_Bpx"] = cb_bpx + row["idx1_raw_bytes"] + row["idx2_raw_bytes"]
+    row["total_compressed_Bpx"] = cb_bpx + idx1_best + row["idx2_raw_bytes"]
     row["x_fp32_compressed"] = 512.0 / row["total_compressed_Bpx"]
     row["x_int8_compressed"] = 128.0 / row["total_compressed_Bpx"]
     return row

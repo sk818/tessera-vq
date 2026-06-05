@@ -140,14 +140,22 @@ HALT 4: Pareto plots + recommended (t, k1, k2) per dataset and overall.
 
 ## 3. Parameter grid (point 2)
 
-- **Tile sizes:** t ∈ {512, 768, 1024}.
-- **2-byte (16-bit-packed) configs** — `idx1_bits + idx2_bits = 16`:
-  - (k1=64, k2=1024) — 6+10 bits
-  - (k1=128, k2=512) — 7+9 bits
-  - (k1=256, k2=256) — 8+8 bits
-- → 3 × 3 = **9 cells** + raw baseline. **(32, 2048) was dropped** (supervisor, 2026-06-05: k=2048 too slow / not needed). This **relaxes the old k1<k2 rule** (256,256 has k1=k2); all k2 ≪ t² so the degeneracy guard is moot.
-- Optional sensitivity: a **k1≈20** point to match the supervisor's visual finding (non-power-of-2, 5-bit idx1) — to be slotted in when WS-2/WS-3 run; k2 partner TBD.
-- **Window:** 12 km (window_px ≈ 1200) read at the **existing canonical bbox centres** (supervisor: option (a), for comparability), not freshly sampled locations.
+**Revised 2026-06-05** after two findings: (i) the 10-bbox WS-1 run showed R² is flat
+across the k1/k2 split (spread ≤0.004, ~25× below the sd) and nearly flat across t
+(0.798→0.791 over 512→1024); (ii) **bit-packed 16-bit indices can't be RLE'd** — RLE
+must target idx1 alone (idx2 is spatially white), forcing **separate byte planes**
+(1 byte/plane, k≤256). So the grid is now a **k1 sweep at fixed k2=256, byte-aligned**:
+
+- **Tile sizes:** t ∈ {512, 1024} (1024 = GeoTessera UTM tile, the integration target;
+  512 kept as an F1 control because per-pixel rel-L2 is ~10% worse at 1024 though R²
+  is flat).
+- **Configs:** (k1, k2=256) for **k1 ∈ {20, 32, 64, 128}** — byte-aligned planes:
+  idx1 = 1-byte plane, RLE'd along a space-filling curve; idx2 = raw 1-byte plane.
+- → 2 × 4 = **8 cells** + raw baseline. k2=256 dominates (full byte; more codewords
+  don't raise R²). Smaller k1 → smoother idx1 → better RLE; WS-2/WS-3 pick the knee.
+- Dropped: the bit-packed (64,1024)/(128,512) configs and t=768 (16-bit packing was
+  the only reason for them; superseded by byte planes).
+- **Window:** 12 km (window_px ≈ 1200) read at the **existing canonical bbox centres**.
 
 ---
 

@@ -13,8 +13,9 @@ default 1200), pick the most-finite ``--tiles-per-bbox`` tiles per tile size
 (``tessera_vq.rvq_large`` on the BLAS-GEMM k-means), and score it. Results are
 aggregated per ``(t, k1, k2)`` cell as mean +- sd across tiles.
 
-Grid (locked): t in {512, 768, 1024} x (k1, k2) in {(64,1024),(128,512),(256,256)},
-all 16-bit-packable index configs. Override with ``--tile-sizes`` / ``--configs``.
+Grid: t in {512, 1024} x (k1, k2) in {(20,256),(32,256),(64,256),(128,256)} -- a k1
+sweep at fixed k2=256 (byte-aligned planes; see scripts/phase3_index_compression).
+Override with ``--tile-sizes`` / ``--configs``.
 
 Memory: exactly one window is resident at a time (freed before the next read); only
 the tiny per-tile metric dicts accumulate. The Parquet output is rewritten after
@@ -47,8 +48,8 @@ from tessera_vq.tiling import extract_finite_tiles
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TILE_SIZES: tuple[int, ...] = (512, 768, 1024)
-DEFAULT_CONFIGS: tuple[str, ...] = ("64:1024", "128:512", "256:256")
+DEFAULT_TILE_SIZES: tuple[int, ...] = (512, 1024)
+DEFAULT_CONFIGS: tuple[str, ...] = ("20:256", "32:256", "64:256", "128:256")
 
 Cell = tuple[int, int, int]
 

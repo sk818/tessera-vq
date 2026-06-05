@@ -14,12 +14,13 @@ from scripts.phase3_large_recon_sweep import (
 )
 
 
-def test_default_grid_is_nine_cells() -> None:
-    """Three tile sizes x three index configs = nine cells, all k < t*t."""
+def test_default_grid_is_eight_cells() -> None:
+    """Two tile sizes x four k1 values (k2=256) = eight cells, all k < t*t."""
     cells = _build_cells(list(DEFAULT_TILE_SIZES), list(DEFAULT_CONFIGS))
-    assert len(cells) == 9
-    assert (512, 64, 1024) in cells
-    assert (1024, 256, 256) in cells
+    assert len(cells) == 8
+    assert (512, 20, 256) in cells
+    assert (1024, 128, 256) in cells
+    assert all(k2 == 256 for _t, _k1, k2 in cells)
     for t, k1, k2 in cells:
         assert k1 < t * t and k2 < t * t
 

@@ -19,29 +19,31 @@ from tessera_vq.index_codec import compress_index_map
 from tessera_vq.rvq_large import rvq_reconstruct_large
 
 
-def test_default_grid_is_nine_cells() -> None:
-    """Three tile sizes x three index configs = nine cells."""
-    assert len(_build_cells(list(DEFAULT_TILE_SIZES), list(DEFAULT_CONFIGS))) == 9
+def test_default_grid_is_eight_cells() -> None:
+    """Two tile sizes x four k1 values (k2=256) = eight cells."""
+    cells = _build_cells(list(DEFAULT_TILE_SIZES), list(DEFAULT_CONFIGS))
+    assert len(cells) == 8
+    assert all(k2 == 256 for _t, _k1, k2 in cells)
 
 
 def test_cell_row_derives_bytes_and_ratios() -> None:
     """Aggregation averages per-tile metrics and derives the byte/ratio columns."""
     per_tile = [
         {
-            "idx1_row_bpp": 4.0,
-            "idx1_morton_bpp": 3.0,
-            "idx1_hilbert_bpp": 2.0,
-            "idx1_raw_bpp": 6.0,
-            "idx2_raw_bpp": 10.0,
-            "idx2_hilbert_bpp": 10.0,
+            "idx1_row_bytes": 0.5,
+            "idx1_morton_bytes": 0.4,
+            "idx1_hilbert_bytes": 0.3,
+            "idx1_raw_bytes": 1.0,
+            "idx2_raw_bytes": 1.0,
+            "idx2_hilbert_bytes": 1.0,
         }
     ]
-    row = _cell_row((512, 64, 1024), per_tile)
+    row = _cell_row((1024, 64, 256), per_tile)
     assert row["n_tiles"] == 1.0
-    assert abs(row["codebook_Bpx"] - (64 + 1024) * 128 / (512 * 512)) < 1e-9
-    assert row["idx1_best_bpp"] == 2.0  # min over orderings
+    assert abs(row["codebook_Bpx"] - (64 + 256) * 128 / (1024 * 1024)) < 1e-9
+    assert row["idx1_best_bytes"] == 0.3  # min over orderings
     # total = codebook + best idx1 + raw idx2, all in bytes/px
-    expect = row["codebook_Bpx"] + 2.0 / 8.0 + 10.0 / 8.0
+    expect = row["codebook_Bpx"] + 0.3 + 1.0
     assert abs(row["total_compressed_Bpx"] - expect) < 1e-9
     assert abs(row["x_fp32_compressed"] - 512.0 / expect) < 1e-6
 
@@ -76,8 +78,8 @@ def test_hilbert_reduces_runs_vs_row_major_on_rvq_map() -> None:
 def test_rle_beats_raw_when_k1_matches_landscape() -> None:
     """When k1 ~ the number of land-cover types, idx1 is smooth and RLE wins."""
     tile = _autocorrelated_tile(128, 16, seed=0)  # ~6 distinct regions
-    res = rvq_reconstruct_large(tile, k1=8, k2=128, seed=42)
-    m = _tile_index_metrics(res.indices1, 8, res.indices2, 128)
-    hil = compress_index_map(res.indices1, 8, "hilbert").rle_bpp
-    assert hil < m["idx1_raw_bpp"]  # space-filling + RLE beats the packed index
-    assert m["idx1_raw_bpp"] == 3.0  # ceil(log2 8)
+    res = rvq_reconstruct_large(tile, k1=8, k2=256, seed=42)
+    m = _tile_index_metrics(res.indices1, 8, res.indices2, 256)
+    hil = compress_index_map(res.indices1, 8, "hilbert").rle_bytes_per_px
+    assert hil < m["idx1_raw_bytes"]  # space-filling + RLE beats the raw byte plane
+    assert m["idx1_raw_bytes"] == 1.0  # byte-aligned plane (k1 <= 256)

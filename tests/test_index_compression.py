@@ -116,7 +116,7 @@ def test_constant_map_is_one_run_everywhere() -> None:
     for ordering in ORDERINGS:
         res = compress_index_map(m, n_symbols=64, ordering=ordering)
         assert res.n_runs == 1
-        assert res.rle_bpp < res.raw_bpp  # RLE wins big on homogeneous data
+        assert res.rle_bytes_per_px < res.raw_bytes_per_px  # RLE wins big on homogeneous data
 
 
 def test_space_filling_beats_row_major_on_blocky_map() -> None:
@@ -129,12 +129,12 @@ def test_space_filling_beats_row_major_on_blocky_map() -> None:
     assert hil.n_runs < row.n_runs
 
 
-def test_raw_bpp_is_ceil_log2_symbols() -> None:
-    """raw_bpp reflects the packed index width."""
+def test_raw_bytes_is_byte_aligned_symbol_width() -> None:
+    """raw_bytes_per_px is the byte-aligned plane width (1 byte for k <= 256)."""
     m = _quadrant_map(16)
-    assert compress_index_map(m, n_symbols=64).raw_bpp == 6.0
-    assert compress_index_map(m, n_symbols=256).raw_bpp == 8.0
-    assert compress_index_map(m, n_symbols=1024).raw_bpp == 10.0
+    assert compress_index_map(m, n_symbols=64).raw_bytes_per_px == 1.0
+    assert compress_index_map(m, n_symbols=256).raw_bytes_per_px == 1.0
+    assert compress_index_map(m, n_symbols=1024).raw_bytes_per_px == 2.0
 
 
 def test_unknown_ordering_raises() -> None:
