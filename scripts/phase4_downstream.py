@@ -66,10 +66,18 @@ def _build_cells(tile_sizes: list[int], configs: list[str]) -> list[Cell]:
 
 
 def _load_gdf(path: str) -> Any:
-    """Read a shapefile (or zipped shapefile) and reproject to EPSG:4326."""
+    """Read a shapefile (or zipped shapefile, incl. nested) and reproject to EPSG:4326."""
     import geopandas as gpd  # noqa: PLC0415  (heavy cross-repo dep; deferred)
 
-    gdf = gpd.read_file(f"zip://{path}" if path.endswith(".zip") else path)
+    uri = path
+    if path.endswith(".zip"):
+        import zipfile  # noqa: PLC0415
+
+        with zipfile.ZipFile(path) as zf:
+            shps = [n for n in zf.namelist() if n.lower().endswith(".shp")]
+        # nested .shp (e.g. austria.zip) needs an explicit inner path after '!'
+        uri = f"zip://{path}!{shps[0]}" if shps else f"zip://{path}"
+    gdf = gpd.read_file(uri)
     if gdf.crs is not None and gdf.crs.to_epsg() != 4326:  # noqa: PLR2004
         gdf = gdf.to_crs(epsg=4326)
     return gdf
