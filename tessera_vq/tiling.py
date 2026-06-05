@@ -5,11 +5,10 @@ so the sampler reads a ~12 km window (window_px ~= 1200) at a canonical bbox cen
 and then picks 1-2 tiles from its finite interior. Two requirements drive this
 module (points 3-4 of the research plan):
 
-- **Jitter** the tile origin: candidate origins are sampled uniformly across the
-  whole in-bounds range ``[0, H-t] x [0, W-t]`` (seeded), so tile placement varies
-  across bboxes -- this decorrelates the sample and lets two distinct,
-  non-overlapping tiles be found when the window has room. (For a ~2t window this
-  approximates a +-t/2 jitter about the centre.)
+- **Jitter** the tile origin around the window centre by up to +-t/2 (clamped
+  in-bounds, seeded), so tile placement varies across bboxes and stays in the
+  finite interior. At large t a ~12 km window fits one such tile (the supervisor
+  confirmed 1 tile/bbox is fine and the statistics are insensitive to it).
 - **Avoid NaN edges.** Tessera windows carry no-data (NaN) pixels near coverage
   edges; per-tile k-means cannot consume NaN, so we score candidate tiles by their
   finite-pixel fraction and keep the most-finite, non-overlapping ones.
@@ -44,9 +43,11 @@ def finite_mask(window: npt.NDArray[np.float32]) -> npt.NDArray[np.bool_]:
 def _candidate_origins(
     h: int, w: int, t: int, n: int, rng: np.random.Generator
 ) -> list[tuple[int, int]]:
-    """``n`` top-left origins sampled uniformly over the in-bounds range, deduped."""
-    rs = rng.integers(0, h - t + 1, size=n)
-    cs = rng.integers(0, w - t + 1, size=n)
+    """``n`` top-left origins jittered by +-t/2 about the window centre, clamped."""
+    cr, cc = (h - t) // 2, (w - t) // 2
+    j = t // 2
+    rs = np.clip(cr + rng.integers(-j, j + 1, size=n), 0, h - t)
+    cs = np.clip(cc + rng.integers(-j, j + 1, size=n), 0, w - t)
     seen: set[tuple[int, int]] = set()
     out: list[tuple[int, int]] = []
     for r, c in zip(rs.tolist(), cs.tolist(), strict=True):

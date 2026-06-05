@@ -16,31 +16,35 @@ def _finite_window(h: int, w: int, c: int = 8) -> np.ndarray:
     return np.random.default_rng(0).standard_normal((h, w, c)).astype(np.float32)
 
 
-def test_returns_requested_count_and_shape_on_finite_window() -> None:
-    """A fully finite roomy window yields n_tiles tiles of exact (t, t, C) shape."""
-    win = _finite_window(2048, 2048)
+def test_returns_tiles_and_shape_on_finite_window() -> None:
+    """A finite window yields 1-2 tiles of exact (t, t, C) shape, all finite."""
+    win = _finite_window(1200, 1200)
     out = extract_finite_tiles(win, t=512, n_tiles=2, seed=42)
-    assert len(out) == 2
+    assert 1 <= len(out) <= 2
     for s in out:
         assert s.tile.shape == (512, 512, 8)
         assert s.finite_frac == 1.0
 
 
-def test_origins_stay_in_bounds() -> None:
-    """Every selected tile lies fully inside the window."""
-    win = _finite_window(1200, 1000)
-    for s in extract_finite_tiles(win, t=768, n_tiles=2, seed=7, n_candidates=20):
-        assert 0 <= s.row <= 1200 - 768
-        assert 0 <= s.col <= 1000 - 768
+def test_origins_stay_in_bounds_and_within_centre_jitter() -> None:
+    """Selected tiles lie inside the window and within +-t/2 of the centre origin."""
+    h, w, t = 1200, 1000, 768
+    cr, cc = (h - t) // 2, (w - t) // 2
+    for s in extract_finite_tiles(_finite_window(h, w), t=t, n_tiles=2, seed=7):
+        assert 0 <= s.row <= h - t
+        assert 0 <= s.col <= w - t
+        assert abs(s.row - cr) <= t // 2
+        assert abs(s.col - cc) <= t // 2
 
 
 def test_selected_tiles_do_not_overlap() -> None:
-    """Greedy selection never returns two overlapping tiles."""
-    win = _finite_window(2048, 2048)
+    """Any pair of returned tiles is non-overlapping (greedy overlap rejection)."""
+    win = _finite_window(1200, 1200)
     out = extract_finite_tiles(win, t=512, n_tiles=2, seed=1, n_candidates=32)
-    assert len(out) == 2
-    a, b = out
-    assert abs(a.row - b.row) >= 512 or abs(a.col - b.col) >= 512
+    assert len(out) >= 1
+    for i, a in enumerate(out):
+        for b in out[i + 1 :]:
+            assert abs(a.row - b.row) >= 512 or abs(a.col - b.col) >= 512
 
 
 def test_avoids_nan_edges() -> None:
@@ -53,6 +57,14 @@ def test_avoids_nan_edges() -> None:
     for s in out:
         assert s.finite_frac == 1.0
         assert s.row >= 400 and s.row + 512 <= 1200
+
+
+def test_n_tiles_one_returns_single_tile() -> None:
+    """Requesting one tile (the large-t case) returns exactly one finite tile."""
+    out = extract_finite_tiles(_finite_window(1200, 1200), t=1024, n_tiles=1, seed=5)
+    assert len(out) == 1
+    assert out[0].tile.shape == (1024, 1024, 8)
+    assert out[0].finite_frac == 1.0
 
 
 def test_window_smaller_than_tile_returns_empty() -> None:
