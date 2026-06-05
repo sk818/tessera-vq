@@ -69,3 +69,64 @@ def wasserstein1_random_projections(
     px = x.astype(np.float64) @ dirs.T
     py = y.astype(np.float64) @ dirs.T
     return float(np.mean([wasserstein_distance(px[:, j], py[:, j]) for j in range(n_proj)]))
+
+
+# Keys returned by reconstruction_metrics (kept here so aggregation can iterate them).
+RECON_METRIC_KEYS = (
+    "rel_l2_mean",
+    "rel_l2_p50",
+    "rel_l2_p90",
+    "rel_l2_p99",
+    "r2",
+)
+
+
+def reconstruction_metrics(
+    orig: npt.NDArray[np.float32], recon: npt.NDArray[np.float32]
+) -> dict[str, float]:
+    """Anchor-free, L2-only reconstruction quality of ``recon`` vs ``orig``.
+
+    Both arrays are ``(..., C)`` and flattened to ``(N, C)``. Unlike a frozen-bin
+    histogram, every metric here is scale-free and run-stable:
+
+    - ``rel_l2_*`` -- per-pixel relative error ``||x - x_hat||_2 / ||x||_2``
+      (mean and the 50/90/99 percentiles of its distribution);
+    - ``r2`` -- fraction of variance explained, ``1 - SS_res / SS_tot`` with
+      per-dimension centring (1.0 = perfect, 0.0 = no better than the mean vector).
+
+    ``n_px`` is also returned (the pixel count behind the stats).
+    """
+    x = orig.reshape(-1, orig.shape[-1]).astype(np.float64, copy=False)
+    xh = recon.reshape(-1, recon.shape[-1]).astype(np.float64, copy=False)
+    if x.shape[0] == 0:
+        return {"n_px": 0.0, **dict.fromkeys(RECON_METRIC_KEYS, 0.0)}
+    err = x - xh
+    l2 = np.linalg.norm(err, axis=1)
+    xn = np.linalg.norm(x, axis=1)
+    rel = l2 / np.where(xn > 0, xn, 1.0)
+    ss_res = float((err * err).sum())
+    ss_tot = float(((x - x.mean(axis=0)) ** 2).sum())
+    return {
+        "n_px": float(x.shape[0]),
+        "rel_l2_mean": float(rel.mean()),
+        "rel_l2_p50": float(np.percentile(rel, 50)),
+        "rel_l2_p90": float(np.percentile(rel, 90)),
+        "rel_l2_p99": float(np.percentile(rel, 99)),
+        "r2": float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0,
+    }
+
+
+def aggregate_reconstruction_metrics(per_tile: list[dict[str, float]]) -> dict[str, float]:
+    """Mean +- sd (ddof=1) of each recon metric across tiles; ``n_tiles`` + total ``n_px``."""
+    if not per_tile:
+        return {"n_tiles": 0.0, "n_px": 0.0}
+    out: dict[str, float] = {
+        "n_tiles": float(len(per_tile)),
+        "n_px": float(sum(m.get("n_px", 0.0) for m in per_tile)),
+    }
+    n = len(per_tile)
+    for key in RECON_METRIC_KEYS:
+        vals = np.asarray([m[key] for m in per_tile], dtype=np.float64)
+        out[f"{key}_mean"] = float(vals.mean())
+        out[f"{key}_sd"] = float(vals.std(ddof=1)) if n > 1 else 0.0
+    return out
