@@ -14,8 +14,8 @@
 - **Q7 sequencing:** workstreams **strictly sequential**, logging all results properly (Parquet + provenance + logs) for a later **technical report**.
 
 **Standing constraints (this work):**
-- **Parameter grid is LOCKED** to §3 (t∈{512,768,1024} × the four 2-byte configs, + k1≈20 sensitivity). Do **not** change it — ask first if a change seems warranted.
-- If **k-means at k=2048 is too slow, drop the (32,2048) cell** — supervisor does not think it is needed.
+- **Parameter grid is LOCKED** to §3 (t∈{512,768,1024} × the three 2-byte configs {(64,1024),(128,512),(256,256)}, + optional k1≈20 sensitivity). Do **not** change it — ask first if a change seems warranted.
+- **(32, 2048) dropped** (2026-06-05): k=2048 k-means ~11 s/tile, supervisor does not think it is needed.
 - **Never modify anything under `/Users/skeshav/code/blore`** (read/import only).
 - **Local commits only — never push.**
 - **Ask before any long run**; supervisor executes it.
@@ -142,12 +142,12 @@ HALT 4: Pareto plots + recommended (t, k1, k2) per dataset and overall.
 
 - **Tile sizes:** t ∈ {512, 768, 1024}.
 - **2-byte (16-bit-packed) configs** — `idx1_bits + idx2_bits = 16`:
-  - (k1=32, k2=2048) — 5+11 bits
   - (k1=64, k2=1024) — 6+10 bits
   - (k1=128, k2=512) — 7+9 bits
   - (k1=256, k2=256) — 8+8 bits
-- → 3 × 4 = **12 cells** + raw baseline. Note this **relaxes the old k1<k2 rule** (256,256 has k1=k2) and replaces the `k2 < t*t` degeneracy guard's relevance (all k2 ≪ t² here). The grid constants in `phase3_rvq_sweep.py` will change accordingly (a parameter-grid change — explicitly your call per CLAUDE.md).
-- (Optional sensitivity: a (k1=20, …) point to match your visual finding — needs a non-power-of-2 idx1, costs ceil(log2 20)=5 bits like k1=32. Worth including? → Q4.)
+- → 3 × 3 = **9 cells** + raw baseline. **(32, 2048) was dropped** (supervisor, 2026-06-05: k=2048 too slow / not needed). This **relaxes the old k1<k2 rule** (256,256 has k1=k2); all k2 ≪ t² so the degeneracy guard is moot.
+- Optional sensitivity: a **k1≈20** point to match the supervisor's visual finding (non-power-of-2, 5-bit idx1) — to be slotted in when WS-2/WS-3 run; k2 partner TBD.
+- **Window:** 12 km (window_px ≈ 1200) read at the **existing canonical bbox centres** (supervisor: option (a), for comparability), not freshly sampled locations.
 
 ---
 
