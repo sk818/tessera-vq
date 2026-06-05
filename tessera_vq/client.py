@@ -11,7 +11,7 @@ Example::
 
     from tessera_vq.client import VQTessera
 
-    gt = VQTessera(server_url="http://michael:8000", t=64, k=16, m="cosine")
+    gt = VQTessera(server_url="http://michael:8000")  # defaults: t=512, k=20, k2=256, L2
     mosaic, transform, crs = gt.fetch_mosaic_for_region(
         (0.145, 52.045, 0.155, 52.055), year=2024
     )
@@ -102,12 +102,12 @@ class VQTessera:
     def __init__(
         self,
         server_url: str = "http://localhost:8000",
-        t: int = 64,
-        k: int = 16,
+        t: int = 512,
+        k: int = 20,
         m: Distance = "euclidean",
         timeout: float = 120.0,
         *,
-        k2: int | None = None,
+        k2: int | None = 256,
     ) -> None:
         self.server_url = server_url.rstrip("/")
         self.t = int(t)
