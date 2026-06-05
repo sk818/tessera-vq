@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from tessera_vq.kmeans_fast import quantize_tile_large
+from tessera_vq.kmeans_fast import assign_blocked, kmeans_fit, quantize_tile_large
 
 
 @dataclass(frozen=True)
@@ -50,3 +50,24 @@ def rvq_reconstruct_large(
     cb2, idx2 = quantize_tile_large(residual, k2, seed=seed + 1, n_iter=n_iter)
     recon = (recon1 + cb2[idx2]).astype(np.float32, copy=False)
     return RVQResult(recon=recon, codebook1=cb1, indices1=idx1, codebook2=cb2, indices2=idx2)
+
+
+def rvq_reconstruct_flat(
+    x: npt.NDArray[np.float32],
+    k1: int,
+    k2: int,
+    *,
+    seed: int = 42,
+    n_iter: int = 25,
+) -> npt.NDArray[np.float32]:
+    """Two-stage residual VQ of a flat ``(M, C)`` pixel array; returns recon ``(M, C)``.
+
+    The downstream path (WS-3) only needs reconstructed vectors -- no spatial index
+    maps -- so this works on already-flattened, NaN-free pixels (callers mask NaN out
+    per block before calling).
+    """
+    cb1 = kmeans_fit(x, k1, seed=seed, n_iter=n_iter)
+    recon1 = cb1[assign_blocked(x, cb1)]
+    residual = (x - recon1).astype(np.float32, copy=False)
+    cb2 = kmeans_fit(residual, k2, seed=seed + 1, n_iter=n_iter)
+    return (recon1 + cb2[assign_blocked(residual, cb2)]).astype(np.float32, copy=False)
