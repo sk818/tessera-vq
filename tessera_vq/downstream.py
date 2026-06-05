@@ -87,3 +87,25 @@ def spatial_group_split(
     test_groups = set(perm[:n_test].tolist())
     test_mask = np.isin(groups, list(test_groups))
     return ~test_mask, test_mask
+
+
+def spatial_group_kfold(
+    groups: npt.NDArray[np.integer], n_folds: int = 4, seed: int = 42
+) -> list[tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]]:
+    """Group k-fold: each fold holds out a disjoint set of whole groups as test.
+
+    Every group is the test set in exactly one fold (a partition of the groups), so
+    averaging F1 over the folds is a robust spatial-hold-out estimate -- essential
+    when there are few tiles (e.g. Cumbria's 4) and a single hold-out is noisy.
+    ``n_folds`` is capped at the number of groups; returns ``[]`` if < 2 groups.
+    """
+    uniq = np.unique(groups)
+    if uniq.size < 2:  # noqa: PLR2004
+        return []
+    k = min(n_folds, int(uniq.size))
+    rng = np.random.default_rng(seed)
+    folds: list[tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]] = []
+    for chunk in np.array_split(rng.permutation(uniq), k):
+        test_mask = np.isin(groups, chunk)
+        folds.append((~test_mask, test_mask))
+    return folds

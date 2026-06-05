@@ -11,6 +11,7 @@ import numpy as np
 from tessera_vq.downstream import (
     extract_labelled,
     reconstruct_tile_blocks,
+    spatial_group_kfold,
     spatial_group_split,
 )
 from tessera_vq.rvq_large import rvq_reconstruct_flat
@@ -111,3 +112,30 @@ def test_spatial_group_split_is_deterministic() -> None:
     a = spatial_group_split(groups, seed=7)
     b = spatial_group_split(groups, seed=7)
     assert np.array_equal(a[1], b[1])
+
+
+def test_spatial_kfold_partitions_groups_across_test_folds() -> None:
+    """Each group is the test set in exactly one fold; train/test disjoint per fold."""
+    groups = np.repeat(np.arange(8), 10)  # 8 groups
+    folds = spatial_group_kfold(groups, n_folds=4, seed=1)
+    assert len(folds) == 4
+    seen_test: set[int] = set()
+    for train, test in folds:
+        assert not (train & test).any()  # disjoint
+        assert (train | test).all()  # cover everything
+        tg = set(groups[test].tolist())
+        assert tg.isdisjoint(seen_test)  # no group tested twice
+        seen_test |= tg
+    assert seen_test == set(range(8))  # every group tested once
+
+
+def test_spatial_kfold_caps_folds_at_group_count() -> None:
+    """n_folds larger than the number of groups is capped (Cumbria has few tiles)."""
+    groups = np.repeat(np.arange(3), 20)  # only 3 groups
+    folds = spatial_group_kfold(groups, n_folds=10, seed=2)
+    assert len(folds) == 3
+
+
+def test_spatial_kfold_single_group_is_empty() -> None:
+    """One group cannot be spatially folded -> no folds."""
+    assert spatial_group_kfold(np.zeros(50, dtype=np.int64), n_folds=4) == []

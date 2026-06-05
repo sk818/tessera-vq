@@ -3,12 +3,13 @@
 The determinative test. For each ``(t, k1, k2)`` cell we compress every GeoTessera
 tile overlapping a labelled shapefile through per-``t``-block RVQ, then train the same
 Random Forest on the **raw** vs the **reconstructed** embeddings at the labelled pixels
-and compare macro-F1 under a **spatial hold-out** (whole tiles held out -- random
-k-fold would leak spatially-autocorrelated neighbours and flatter VQ).
+and compare macro-F1 under **spatial group k-fold** (each fold holds out whole tiles;
+random k-fold would leak spatially-autocorrelated neighbours and flatter VQ). Averaging
+over folds is essential when there are few tiles (Cumbria has 4).
 
-Per cell it records ``f1_raw`` and ``f1_recon`` (same pixels, same split) and their
-gap ``delta_f1``. Tiles are re-fetched per cell to keep memory to one cell's pixels;
-GeoTessera disk-caches downloads, so the repeat cost is decode-only.
+Per cell it records ``f1_raw_mean/sd``, ``f1_recon_mean/sd`` and the paired
+``delta_f1_mean/sd`` across folds. Tiles are re-fetched per cell to keep memory to one
+cell's pixels; GeoTessera disk-caches downloads, so the repeat cost is decode-only.
 
 Requires the cross-repo deps (personal repos): ``geotessera`` and ``tessera_eval``
 (``uv pip install -e ../blore/packages/tessera-eval`` + geotessera), plus geopandas /
@@ -32,7 +33,11 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from tessera_vq.downstream import extract_labelled, reconstruct_tile_blocks, spatial_group_split
+from tessera_vq.downstream import (
+    extract_labelled,
+    reconstruct_tile_blocks,
+    spatial_group_kfold,
+)
 from tessera_vq.io_utils import write_parquet_with_provenance
 
 logger = logging.getLogger(__name__)
@@ -52,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--year", type=int, default=2024)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out-dir", default="results/phase4")
-    p.add_argument("--test-frac", type=float, default=0.3, help="fraction of tiles held out")
-    p.add_argument("--max-train", type=int, default=50000, help="cap on training pixels")
+    p.add_argument("--spatial-folds", type=int, default=4, help="group k-folds over tiles")
+    p.add_argument("--max-train", type=int, default=50000, help="cap on training pixels/fold")
     p.add_argument("--tile-sizes", type=int, nargs="+", default=list(DEFAULT_TILE_SIZES))
     p.add_argument("--configs", nargs="+", default=list(DEFAULT_CONFIGS))
     return p.parse_args()
@@ -156,9 +161,9 @@ def _f1(
 
 
 def _cell_result(
-    data: dict[str, Any], cell: Cell, test_frac: float, max_train: int, seed: int
+    data: dict[str, Any], cell: Cell, n_folds: int, max_train: int, seed: int
 ) -> dict[str, Any]:
-    """Spatial-split the cell's pixels and return raw-vs-recon F1 (same pixels/split)."""
+    """Spatial group k-fold; return raw/recon F1 mean+-sd and the paired delta."""
     t, k1, k2 = cell
     labels, groups = data["labels"], data["groups"]
     row: dict[str, Any] = {
@@ -168,14 +173,22 @@ def _cell_result(
         "n_pixels": int(labels.size),
         "n_classes": int(np.unique(labels).size) if labels.size else 0,
     }
-    if np.unique(groups).size < 2 or labels.size == 0:  # noqa: PLR2004
+    folds = spatial_group_kfold(groups, n_folds=n_folds, seed=seed)
+    if not folds:
         return row
-    train, test = spatial_group_split(groups, test_frac=test_frac, seed=seed)
-    train = _subsample(train, max_train, seed)
-    row["n_train"], row["n_test"] = int(train.sum()), int(test.sum())
-    row["f1_raw"] = _f1(data["raw"], labels, train, test, seed)
-    row["f1_recon"] = _f1(data["recon"], labels, train, test, seed)
-    row["delta_f1"] = row["f1_raw"] - row["f1_recon"]
+    raw_f1, recon_f1 = [], []
+    for train, test in folds:
+        tr = _subsample(train, max_train, seed)
+        raw_f1.append(_f1(data["raw"], labels, tr, test, seed))
+        recon_f1.append(_f1(data["recon"], labels, tr, test, seed))
+    raw_a, recon_a = np.asarray(raw_f1), np.asarray(recon_f1)
+    row["n_folds"] = len(folds)
+    row["f1_raw_mean"] = float(raw_a.mean())
+    row["f1_raw_sd"] = float(raw_a.std(ddof=1)) if len(folds) > 1 else 0.0
+    row["f1_recon_mean"] = float(recon_a.mean())
+    row["f1_recon_sd"] = float(recon_a.std(ddof=1)) if len(folds) > 1 else 0.0
+    row["delta_f1_mean"] = float((raw_a - recon_a).mean())
+    row["delta_f1_sd"] = float((raw_a - recon_a).std(ddof=1)) if len(folds) > 1 else 0.0
     return row
 
 
@@ -198,7 +211,7 @@ def main() -> None:
     out_path = f"{args.out_dir}/{args.tag}_downstream.parquet"
     for cell in cells:
         data = _collect_cell(gt, gdf, args.field, le, cell, args.year, args.seed)
-        rows.append(_cell_result(data, cell, args.test_frac, args.max_train, args.seed))
+        rows.append(_cell_result(data, cell, args.spatial_folds, args.max_train, args.seed))
         write_parquet_with_provenance(
             pd.DataFrame(rows), out_path, seed=args.seed, config_path=args.shapefile
         )
