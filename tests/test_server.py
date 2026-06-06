@@ -9,6 +9,7 @@ import numpy.typing as npt
 import pytest
 
 from tessera_vq import server
+from tessera_vq.entropy import rle_decode_stack
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
 
 
@@ -139,3 +140,11 @@ def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) 
         assert data["positions"].shape[0] == 4
         assert data["codebooks1"].shape == (4, 4, 128)
         assert data["codebooks2"].shape == (4, 4, 128)
+        # idx1 ships RLE'd (idx1_values/lengths/runs), idx2 stays raw
+        assert "indices1" not in data.files and "idx1_values" in data.files
+        assert data["indices2"].shape == (4, 32, 32)
+        idx1 = rle_decode_stack(
+            data["idx1_values"], data["idx1_lengths"], data["idx1_runs"], 32, 32
+        )
+        assert idx1.shape == (4, 32, 32)
+        assert int(idx1.max()) < 4

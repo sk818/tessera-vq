@@ -33,3 +33,44 @@ def rle_decode(
 ) -> npt.NDArray[np.int64]:
     """Inverse of :func:`rle_encode`."""
     return np.repeat(np.asarray(values, np.int64), np.asarray(lengths, np.int64))
+
+
+def rle_encode_stack(
+    stack: npt.NDArray[np.integer],
+) -> tuple[npt.NDArray[np.integer], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Row-major RLE a stack of index maps ``(n, h, w)`` for the wire format.
+
+    Returns ``(values, lengths, runs)``: ``values``/``lengths`` are the concatenated
+    runs of every tile (in tile order), ``runs[i]`` is the number of runs in tile ``i``
+    (so a decoder can slice them apart). ``values`` keep the input dtype (compact on
+    the wire); ``lengths`` and ``runs`` are int64.
+    """
+    vals: list[npt.NDArray[np.integer]] = []
+    lens: list[npt.NDArray[np.int64]] = []
+    runs = np.empty(stack.shape[0], dtype=np.int64)
+    for i in range(stack.shape[0]):
+        v, ln = rle_encode(stack[i].ravel())
+        vals.append(v.astype(stack.dtype, copy=False))
+        lens.append(ln)
+        runs[i] = v.size
+    values = np.concatenate(vals) if vals else np.zeros(0, stack.dtype)
+    lengths = np.concatenate(lens) if lens else np.zeros(0, np.int64)
+    return values, lengths, runs
+
+
+def rle_decode_stack(
+    values: npt.NDArray[np.integer],
+    lengths: npt.NDArray[np.integer],
+    runs: npt.NDArray[np.integer],
+    h: int,
+    w: int,
+) -> npt.NDArray[np.integer]:
+    """Inverse of :func:`rle_encode_stack`; rebuild the ``(n, h, w)`` stack."""
+    n = int(runs.size)
+    out = np.empty((n, h, w), dtype=values.dtype)
+    off = 0
+    for i in range(n):
+        r = int(runs[i])
+        out[i] = rle_decode(values[off : off + r], lengths[off : off + r]).reshape(h, w)
+        off += r
+    return out

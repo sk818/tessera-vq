@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tessera_vq.entropy import rle_decode, rle_encode
+from tessera_vq.entropy import rle_decode, rle_decode_stack, rle_encode, rle_encode_stack
 from tessera_vq.hilbert import hilbert_order
 from tessera_vq.index_codec import ORDERINGS, compress_index_map
 from tessera_vq.morton import decode_morton2d, encode_morton2d, morton_order
@@ -95,6 +95,26 @@ def test_rle_empty_and_single_run() -> None:
     assert v.size == 0 and ln.size == 0
     v, ln = rle_encode(np.full(50, 7, np.int32))
     assert v.tolist() == [7] and ln.tolist() == [50]
+
+
+def test_rle_stack_roundtrip_preserves_dtype_and_values() -> None:
+    """Encoding then decoding a stack of index maps reproduces it exactly (wire format)."""
+    rng = np.random.default_rng(5)
+    stack = rng.integers(0, 6, size=(4, 8, 8)).astype(np.uint8)
+    stack[0] = 3  # a fully constant tile (one run) alongside noisy ones
+    values, lengths, runs = rle_encode_stack(stack)
+    assert runs.shape == (4,)
+    assert runs[0] == 1  # constant tile collapses to a single run
+    out = rle_decode_stack(values, lengths, runs, 8, 8)
+    assert out.dtype == stack.dtype
+    assert np.array_equal(out, stack)
+
+
+def test_rle_stack_empty() -> None:
+    """A zero-tile stack round-trips to an empty (0, h, w) array."""
+    values, lengths, runs = rle_encode_stack(np.zeros((0, 8, 8), np.uint8))
+    assert runs.size == 0
+    assert rle_decode_stack(values, lengths, runs, 8, 8).shape == (0, 8, 8)
 
 
 # ---- Codec ----------------------------------------------------------------

@@ -33,6 +33,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.data import read_region
+from tessera_vq.entropy import rle_encode_stack
 from tessera_vq.sweep import (
     Distance,
     quantize_window_for_serving,
@@ -160,11 +161,16 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
     )
     if positions.shape[0] == 0:
         return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
+    # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is the
+    # white residual and stays raw (it does not compress). Decoded back by the client.
+    idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
     buf = io.BytesIO()
     np.savez(
         buf,
         codebooks1=cbs1,
-        indices1=idxs1,
+        idx1_values=idx1_values,
+        idx1_lengths=idx1_lengths.astype(np.uint32),
+        idx1_runs=idx1_runs.astype(np.int32),
         codebooks2=cbs2,
         indices2=idxs2,
         positions=positions,

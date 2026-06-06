@@ -40,6 +40,8 @@ import numpy as np
 import numpy.typing as npt
 from affine import Affine
 
+from tessera_vq.entropy import rle_decode_stack
+
 Distance = Literal["euclidean", "cosine"]
 
 
@@ -259,13 +261,16 @@ def _structure_from_npz(
         metric = cast("Distance", str(data["distance"]))
         if is_rvq:
             cb1: npt.NDArray[np.float32] = data["codebooks1"]
-            idx1: npt.NDArray[Any] = data["indices1"]
-            cb2: npt.NDArray[np.float32] | None = data["codebooks2"]
-            idx2: npt.NDArray[Any] | None = data["indices2"]
             t, k1, k2_val = int(meta[0]), int(meta[1]), int(meta[2])
             year = int(meta[3])
             full_h, full_w = int(meta[4]), int(meta[5])
             k2: int | None = k2_val
+            # idx1 arrives row-major RLE'd (idx1_values/lengths/runs); idx2 is raw.
+            idx1: npt.NDArray[Any] = rle_decode_stack(
+                data["idx1_values"], data["idx1_lengths"], data["idx1_runs"], t, t
+            )
+            cb2: npt.NDArray[np.float32] | None = data["codebooks2"]
+            idx2: npt.NDArray[Any] | None = data["indices2"]
         else:
             cb1 = data["codebooks"]
             idx1 = data["indices"]
