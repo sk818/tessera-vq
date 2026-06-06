@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", default="results/phase4")
     p.add_argument("--spatial-folds", type=int, default=4, help="group k-folds over tiles")
     p.add_argument("--max-train", type=int, default=50000, help="cap on training pixels/fold")
+    p.add_argument(
+        "--int8-codebooks",
+        action="store_true",
+        help="reconstruct from int8-served codebooks (WS-1 validation)",
+    )
     p.add_argument("--tile-sizes", type=int, nargs="+", default=list(DEFAULT_TILE_SIZES))
     p.add_argument("--configs", nargs="+", default=list(DEFAULT_CONFIGS))
     return p.parse_args()
@@ -89,7 +94,7 @@ def _load_gdf(path: str) -> Any:
 
 
 def _collect_cell(
-    gt: Any, gdf: Any, field: str, le: Any, cell: Cell, year: int, seed: int
+    gt: Any, gdf: Any, field: str, le: Any, cell: Cell, year: int, seed: int, int8: bool
 ) -> dict[str, Any]:
     """Re-fetch tiles, RVQ each with this cell, return raw/recon/labels/groups arrays."""
     from rasterio.transform import array_bounds  # noqa: PLC0415
@@ -108,7 +113,9 @@ def _collect_cell(
         class_raster = rasterize_shapefile(tile_gdf, field, transform, w, h, label_encoder=le)
         if int((class_raster > 0).sum()) == 0:
             continue
-        recon = reconstruct_tile_blocks(np.asarray(emb, np.float32), t, k1, k2, seed=seed)
+        recon = reconstruct_tile_blocks(
+            np.asarray(emb, np.float32), t, k1, k2, seed=seed, quantize_codebooks=int8
+        )
         raw_v, rec_v, lab = extract_labelled(np.asarray(emb, np.float32), recon, class_raster)
         if raw_v.shape[0] == 0:
             continue
@@ -210,8 +217,12 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     out_path = f"{args.out_dir}/{args.tag}_downstream.parquet"
     for cell in cells:
-        data = _collect_cell(gt, gdf, args.field, le, cell, args.year, args.seed)
-        rows.append(_cell_result(data, cell, args.spatial_folds, args.max_train, args.seed))
+        data = _collect_cell(
+            gt, gdf, args.field, le, cell, args.year, args.seed, args.int8_codebooks
+        )
+        row = _cell_result(data, cell, args.spatial_folds, args.max_train, args.seed)
+        row["int8_codebooks"] = bool(args.int8_codebooks)
+        rows.append(row)
         write_parquet_with_provenance(
             pd.DataFrame(rows), out_path, seed=args.seed, config_path=args.shapefile
         )

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from tessera_vq.codebook_codec import roundtrip_uint8
 from tessera_vq.kmeans_fast import assign_blocked, kmeans_fit, quantize_tile_large
 
 
@@ -59,15 +60,24 @@ def rvq_reconstruct_flat(
     *,
     seed: int = 42,
     n_iter: int = 25,
+    quantize_codebooks: bool = False,
 ) -> npt.NDArray[np.float32]:
     """Two-stage residual VQ of a flat ``(M, C)`` pixel array; returns recon ``(M, C)``.
 
-    The downstream path (WS-3) only needs reconstructed vectors -- no spatial index
-    maps -- so this works on already-flattened, NaN-free pixels (callers mask NaN out
-    per block before calling).
+    The downstream path only needs reconstructed vectors -- no spatial index maps -- so
+    this works on already-flattened, NaN-free pixels (callers mask NaN out per block).
+
+    ``quantize_codebooks=True`` reconstructs from int8-round-tripped codebooks (the
+    precision the bolt-on actually serves), for validating WS-1's int8 wire format
+    downstream. Indices and the stage-1 residual still use the float32 codebooks, exactly
+    as the server computes them before quantizing for the wire.
     """
     cb1 = kmeans_fit(x, k1, seed=seed, n_iter=n_iter)
-    recon1 = cb1[assign_blocked(x, cb1)]
-    residual = (x - recon1).astype(np.float32, copy=False)
+    idx1 = assign_blocked(x, cb1)
+    residual = (x - cb1[idx1]).astype(np.float32, copy=False)
     cb2 = kmeans_fit(residual, k2, seed=seed + 1, n_iter=n_iter)
-    return (recon1 + cb2[assign_blocked(residual, cb2)]).astype(np.float32, copy=False)
+    idx2 = assign_blocked(residual, cb2)
+    if quantize_codebooks:
+        cb1 = roundtrip_uint8(cb1)
+        cb2 = roundtrip_uint8(cb2)
+    return (cb1[idx1] + cb2[idx2]).astype(np.float32, copy=False)

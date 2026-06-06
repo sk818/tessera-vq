@@ -29,12 +29,14 @@ def reconstruct_tile_blocks(
     *,
     seed: int = 42,
     n_iter: int = 25,
+    quantize_codebooks: bool = False,
 ) -> npt.NDArray[np.float32]:
     """RVQ-reconstruct an ``(H, W, C)`` tile block-by-block (``t x t``); NaN stays NaN.
 
     Each block is quantised on its own finite pixels (a block with <= k1 finite pixels
     is left as NaN -- too few to fit a stage-1 codebook). Partial edge blocks are
-    handled naturally (``k_eff`` caps at the block's pixel count).
+    handled naturally (``k_eff`` caps at the block's pixel count). ``quantize_codebooks``
+    reconstructs from int8-served codebooks (WS-1 validation; see ``rvq_reconstruct_flat``).
     """
     h, w, c = emb.shape
     recon = np.full((h, w, c), np.nan, dtype=np.float32)
@@ -46,7 +48,14 @@ def reconstruct_tile_blocks(
             if int(finite.sum()) <= k1:
                 continue
             rec = np.full_like(flat, np.nan)
-            rec[finite] = rvq_reconstruct_flat(flat[finite], k1, k2, seed=seed, n_iter=n_iter)
+            rec[finite] = rvq_reconstruct_flat(
+                flat[finite],
+                k1,
+                k2,
+                seed=seed,
+                n_iter=n_iter,
+                quantize_codebooks=quantize_codebooks,
+            )
             recon[r0 : r0 + t, c0 : c0 + t] = rec.reshape(block.shape)
     return recon
 

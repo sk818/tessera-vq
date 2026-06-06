@@ -9,6 +9,7 @@ import numpy.typing as npt
 import pytest
 
 from tessera_vq import server
+from tessera_vq.codebook_codec import dequantize_codebook_uint8
 from tessera_vq.entropy import rle_decode_stack
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
 
@@ -138,8 +139,13 @@ def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) 
     assert resp.status_code == 200
     with np.load(io.BytesIO(resp.data)) as data:
         assert data["positions"].shape[0] == 4
-        assert data["codebooks1"].shape == (4, 4, 128)
-        assert data["codebooks2"].shape == (4, 4, 128)
+        # codebooks ship as per-dim uint8 (q + lo/hi), not float32
+        assert "codebooks1" not in data.files and "codebooks1_q" in data.files
+        assert data["codebooks1_q"].dtype == np.uint8
+        cb1 = dequantize_codebook_uint8(
+            data["codebooks1_q"], data["codebooks1_lo"], data["codebooks1_hi"]
+        )
+        assert cb1.shape == (4, 4, 128) and cb1.dtype == np.float32
         # idx1 ships RLE'd (idx1_values/lengths/runs), idx2 stays raw
         assert "indices1" not in data.files and "idx1_values" in data.files
         assert data["indices2"].shape == (4, 32, 32)

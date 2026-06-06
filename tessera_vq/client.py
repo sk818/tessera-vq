@@ -40,6 +40,7 @@ import numpy as np
 import numpy.typing as npt
 from affine import Affine
 
+from tessera_vq.codebook_codec import dequantize_codebook_uint8
 from tessera_vq.entropy import rle_decode_stack
 
 Distance = Literal["euclidean", "cosine"]
@@ -255,21 +256,25 @@ def _structure_from_npz(
     ``[t, k, year, H, W]``; RVQ ``meta`` is ``[t, k1, k2, year, H, W]``).
     """
     with np.load(io.BytesIO(npz_bytes)) as data:
-        is_rvq = "codebooks2" in data.files
+        is_rvq = "codebooks1_q" in data.files
         positions: npt.NDArray[np.int32] = data["positions"].astype(np.int32, copy=False)
         meta = data["meta"]
         metric = cast("Distance", str(data["distance"]))
         if is_rvq:
-            cb1: npt.NDArray[np.float32] = data["codebooks1"]
             t, k1, k2_val = int(meta[0]), int(meta[1]), int(meta[2])
             year = int(meta[3])
             full_h, full_w = int(meta[4]), int(meta[5])
             k2: int | None = k2_val
-            # idx1 arrives row-major RLE'd (idx1_values/lengths/runs); idx2 is raw.
+            # codebooks arrive per-dim uint8 (q + lo/hi); idx1 row-major RLE'd; idx2 raw.
+            cb1: npt.NDArray[np.float32] = dequantize_codebook_uint8(
+                data["codebooks1_q"], data["codebooks1_lo"], data["codebooks1_hi"]
+            )
             idx1: npt.NDArray[Any] = rle_decode_stack(
                 data["idx1_values"], data["idx1_lengths"], data["idx1_runs"], t, t
             )
-            cb2: npt.NDArray[np.float32] | None = data["codebooks2"]
+            cb2: npt.NDArray[np.float32] | None = dequantize_codebook_uint8(
+                data["codebooks2_q"], data["codebooks2_lo"], data["codebooks2_hi"]
+            )
             idx2: npt.NDArray[Any] | None = data["indices2"]
         else:
             cb1 = data["codebooks"]

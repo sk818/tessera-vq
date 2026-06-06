@@ -46,6 +46,17 @@ def test_reconstruct_tile_blocks_all_finite() -> None:
     assert float(np.mean(np.linalg.norm(tile - recon, axis=-1))) < 2.0
 
 
+def test_int8_codebooks_preserve_reconstruction() -> None:
+    """Reconstructing from int8-served codebooks barely changes the error vs float32."""
+    tile = _clustered_tile(64, 64, 16, k=6, seed=7)
+    r32 = reconstruct_tile_blocks(tile, t=32, k1=8, k2=16, seed=42)
+    r8 = reconstruct_tile_blocks(tile, t=32, k1=8, k2=16, seed=42, quantize_codebooks=True)
+    assert r8.shape == r32.shape and np.all(np.isfinite(r8))
+    e32 = float(np.mean(np.linalg.norm(tile - r32, axis=-1)))
+    e8 = float(np.mean(np.linalg.norm(tile - r8, axis=-1)))
+    assert e8 <= e32 * 1.5 + 0.1  # int8 adds only sub-quant noise, no blow-up
+
+
 def test_reconstruct_tile_blocks_leaves_nodata_nan() -> None:
     """A fully-NaN block stays NaN; finite blocks are reconstructed."""
     tile = _clustered_tile(64, 64, 16, k=6, seed=2)

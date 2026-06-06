@@ -32,6 +32,7 @@ from typing import Any, cast
 import numpy as np
 from flask import Flask, Response, jsonify, request
 
+from tessera_vq.codebook_codec import quantize_codebook_uint8
 from tessera_vq.data import read_region
 from tessera_vq.entropy import rle_encode_stack
 from tessera_vq.sweep import (
@@ -162,16 +163,23 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
     if positions.shape[0] == 0:
         return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
     # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is the
-    # white residual and stays raw (it does not compress). Decoded back by the client.
+    # white residual and stays raw (it does not compress). Codebooks ship as per-dim
+    # uint8 (q + lo/hi scales) instead of float32. All decoded back by the client.
     idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
+    cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
+    cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
     buf = io.BytesIO()
     np.savez(
         buf,
-        codebooks1=cbs1,
+        codebooks1_q=cb1_q,
+        codebooks1_lo=cb1_lo,
+        codebooks1_hi=cb1_hi,
         idx1_values=idx1_values,
         idx1_lengths=idx1_lengths.astype(np.uint32),
         idx1_runs=idx1_runs.astype(np.int32),
-        codebooks2=cbs2,
+        codebooks2_q=cb2_q,
+        codebooks2_lo=cb2_lo,
+        codebooks2_hi=cb2_hi,
         indices2=idxs2,
         positions=positions,
         meta=np.asarray([t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
