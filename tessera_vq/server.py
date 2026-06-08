@@ -27,6 +27,9 @@ from __future__ import annotations
 import io
 import logging
 import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 import numpy as np
@@ -65,6 +68,29 @@ class _NoDataError(Exception):
 
 class _NoTilesError(Exception):
     """No all-finite tiles fit the bbox at this t (-> 422); not cached."""
+
+
+class _BusyError(Exception):
+    """All live-compute slots are taken (-> 429); shed load. Cache hits never hit this."""
+
+
+# Concurrency cap (WS-3): bound simultaneous live computes (k-means + geotessera read)
+# so a burst can't exhaust michael's CPU/RAM. Per-IP rate limiting is nginx's job.
+_MAX_CONCURRENCY = int(
+    os.environ.get("TESSERA_VQ_MAX_CONCURRENCY", str(max(1, (os.cpu_count() or 2) - 2)))
+)
+_COMPUTE_SEM = threading.BoundedSemaphore(_MAX_CONCURRENCY)
+
+
+@contextmanager
+def _compute_slot() -> Iterator[None]:
+    """Hold one compute slot for the duration; raise _BusyError if none free."""
+    if not _COMPUTE_SEM.acquire(blocking=False):
+        raise _BusyError
+    try:
+        yield
+    finally:
+        _COMPUTE_SEM.release()
 
 
 def _rvq_cache_key(
@@ -108,34 +134,38 @@ def quantized() -> Response:  # noqa: PLR0911
     year = int(body.get("year", 2024))
     sample_size = int(body.get("sample_size", 2000))
     seed = int(body.get("seed", 42))
-    mosaic, path = read_region(bbox, year)
-    if mosaic is None:
-        return _bad_request("no embeddings available for bbox", code=404)
-    codebooks, indices, positions = quantize_window_for_serving(
-        mosaic, t, k, m, seed, sample_size=sample_size
-    )
-    logger.info(
-        "quantized bbox=%s year=%d t=%d k=%d m=%s path=%s n_tiles=%d",
-        bbox,
-        year,
-        t,
-        k,
-        m,
-        path,
-        positions.shape[0],
-    )
-    if positions.shape[0] == 0:
-        return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
-    buf = io.BytesIO()
-    np.savez(
-        buf,
-        codebooks=codebooks,
-        indices=indices,
-        positions=positions,
-        meta=np.asarray([t, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
-        distance=np.asarray(m),
-    )
-    return Response(buf.getvalue(), mimetype="application/octet-stream")
+    try:
+        with _compute_slot():
+            mosaic, path = read_region(bbox, year)
+            if mosaic is None:
+                return _bad_request("no embeddings available for bbox", code=404)
+            codebooks, indices, positions = quantize_window_for_serving(
+                mosaic, t, k, m, seed, sample_size=sample_size
+            )
+            logger.info(
+                "quantized bbox=%s year=%d t=%d k=%d m=%s path=%s n_tiles=%d",
+                bbox,
+                year,
+                t,
+                k,
+                m,
+                path,
+                positions.shape[0],
+            )
+            if positions.shape[0] == 0:
+                return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
+            buf = io.BytesIO()
+            np.savez(
+                buf,
+                codebooks=codebooks,
+                indices=indices,
+                positions=positions,
+                meta=np.asarray([t, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
+                distance=np.asarray(m),
+            )
+            return Response(buf.getvalue(), mimetype="application/octet-stream")
+    except _BusyError:
+        return _busy_response()
 
 
 @app.post("/quantized_rvq")  # type: ignore
@@ -170,49 +200,52 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
     seed = int(body.get("seed", 42))
 
     def _compute() -> bytes:
-        """Read + quantize + pack the NPZ. Raises _NoDataError/_NoTilesError (never cached)."""
-        mosaic, path = read_region(bbox, year)
-        if mosaic is None:
-            raise _NoDataError
-        cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
-            mosaic, t, k1, k2, m, seed, sample_size=sample_size
-        )
-        logger.info(
-            "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
-            bbox,
-            year,
-            t,
-            k1,
-            k2,
-            m,
-            path,
-            positions.shape[0],
-        )
-        if positions.shape[0] == 0:
-            raise _NoTilesError(_no_tiles_message(mosaic.shape, t))
-        # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is the
-        # white residual and stays raw. Codebooks ship as per-dim uint8 (q + lo/hi).
-        idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
-        cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
-        cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
-        buf = io.BytesIO()
-        np.savez(
-            buf,
-            codebooks1_q=cb1_q,
-            codebooks1_lo=cb1_lo,
-            codebooks1_hi=cb1_hi,
-            idx1_values=idx1_values,
-            idx1_lengths=idx1_lengths.astype(np.uint32),
-            idx1_runs=idx1_runs.astype(np.int32),
-            codebooks2_q=cb2_q,
-            codebooks2_lo=cb2_lo,
-            codebooks2_hi=cb2_hi,
-            indices2=idxs2,
-            positions=positions,
-            meta=np.asarray([t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
-            distance=np.asarray(m),
-        )
-        return buf.getvalue()
+        """Read+quantize+pack under a compute slot. Raises _NoData/_NoTiles/_Busy errors."""
+        with _compute_slot():
+            mosaic, path = read_region(bbox, year)
+            if mosaic is None:
+                raise _NoDataError
+            cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
+                mosaic, t, k1, k2, m, seed, sample_size=sample_size
+            )
+            logger.info(
+                "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
+                bbox,
+                year,
+                t,
+                k1,
+                k2,
+                m,
+                path,
+                positions.shape[0],
+            )
+            if positions.shape[0] == 0:
+                raise _NoTilesError(_no_tiles_message(mosaic.shape, t))
+            # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is
+            # the white residual and stays raw. Codebooks ship as per-dim uint8 (q+lo/hi).
+            idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
+            cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
+            cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
+            buf = io.BytesIO()
+            np.savez(
+                buf,
+                codebooks1_q=cb1_q,
+                codebooks1_lo=cb1_lo,
+                codebooks1_hi=cb1_hi,
+                idx1_values=idx1_values,
+                idx1_lengths=idx1_lengths.astype(np.uint32),
+                idx1_runs=idx1_runs.astype(np.int32),
+                codebooks2_q=cb2_q,
+                codebooks2_lo=cb2_lo,
+                codebooks2_hi=cb2_hi,
+                indices2=idxs2,
+                positions=positions,
+                meta=np.asarray(
+                    [t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32
+                ),
+                distance=np.asarray(m),
+            )
+            return buf.getvalue()
 
     key = _rvq_cache_key(bbox, year, t, k1, k2, m, sample_size, seed)
     try:
@@ -221,6 +254,8 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
         return _bad_request("no embeddings available for bbox", code=404)
     except _NoTilesError as exc:
         return _bad_request(str(exc), code=422)
+    except _BusyError:
+        return _busy_response()
     return Response(data, mimetype="application/octet-stream")
 
 
@@ -253,53 +288,67 @@ def residuals() -> Response:  # noqa: PLR0911, PLR0912
     n_bins = max(2, int(body.get("n_bins", 50)))
     sample_size = int(body.get("sample_size", 2000))
     seed = int(body.get("seed", 42))
-    mosaic, path = read_region(bbox, year)
-    if mosaic is None:
-        return _bad_request("no embeddings available for bbox", code=404)
-    if k2 is None:
-        norms = quantize_window_residual_norms(mosaic, t, k, m, seed, sample_size=sample_size)
-    else:
-        try:
-            norms = quantize_window_residual_norms_rvq(
-                mosaic, t, k, k2, m, seed, sample_size=sample_size
+    try:
+        with _compute_slot():
+            mosaic, path = read_region(bbox, year)
+            if mosaic is None:
+                return _bad_request("no embeddings available for bbox", code=404)
+            if k2 is None:
+                norms = quantize_window_residual_norms(
+                    mosaic, t, k, m, seed, sample_size=sample_size
+                )
+            else:
+                try:
+                    norms = quantize_window_residual_norms_rvq(
+                        mosaic, t, k, k2, m, seed, sample_size=sample_size
+                    )
+                except NotImplementedError as exc:
+                    return _bad_request(str(exc))
+            logger.info(
+                "residuals bbox=%s year=%d t=%d k=%d k2=%s m=%s path=%s n_pixels=%d n_bins=%d",
+                bbox,
+                year,
+                t,
+                k,
+                k2,
+                m,
+                path,
+                norms.size,
+                n_bins,
             )
-        except NotImplementedError as exc:
-            return _bad_request(str(exc))
-    logger.info(
-        "residuals bbox=%s year=%d t=%d k=%d k2=%s m=%s path=%s n_pixels=%d n_bins=%d",
-        bbox,
-        year,
-        t,
-        k,
-        k2,
-        m,
-        path,
-        norms.size,
-        n_bins,
-    )
-    if norms.size == 0:
-        return jsonify({"n_pixels": 0, "bin_edges": [], "counts": [], "stats": {}})
-    counts, edges = np.histogram(norms, bins=n_bins)
-    return jsonify(
-        {
-            "n_pixels": int(norms.size),
-            "bin_edges": edges.tolist(),
-            "counts": counts.tolist(),
-            "stats": {
-                "mean": float(norms.mean()),
-                "p10": float(np.quantile(norms, 0.1)),
-                "p50": float(np.quantile(norms, 0.5)),
-                "p90": float(np.quantile(norms, 0.9)),
-                "p99": float(np.quantile(norms, 0.99)),
-            },
-        }
-    )
+            if norms.size == 0:
+                return jsonify({"n_pixels": 0, "bin_edges": [], "counts": [], "stats": {}})
+            counts, edges = np.histogram(norms, bins=n_bins)
+            return jsonify(
+                {
+                    "n_pixels": int(norms.size),
+                    "bin_edges": edges.tolist(),
+                    "counts": counts.tolist(),
+                    "stats": {
+                        "mean": float(norms.mean()),
+                        "p10": float(np.quantile(norms, 0.1)),
+                        "p50": float(np.quantile(norms, 0.5)),
+                        "p90": float(np.quantile(norms, 0.9)),
+                        "p99": float(np.quantile(norms, 0.99)),
+                    },
+                }
+            )
+    except _BusyError:
+        return _busy_response()
 
 
 def _bad_request(message: str, *, code: int = 400) -> Response:
     """Return a small JSON error response."""
     response = jsonify({"error": message})
     response.status_code = code
+    return response
+
+
+def _busy_response() -> Response:
+    """429 with Retry-After when all compute slots are in use (load shedding)."""
+    response = jsonify({"error": "server busy: all compute slots in use, retry shortly"})
+    response.status_code = 429
+    response.headers["Retry-After"] = "2"
     return response
 
 

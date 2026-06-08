@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 
 import numpy as np
 import numpy.typing as npt
@@ -178,3 +179,22 @@ def test_quantized_rvq_cache_serves_second_request(
     assert r1.status_code == 200 and r2.status_code == 200
     assert r1.data == r2.data  # identical bytes
     assert calls["n"] == 1  # second request hit the cache (no recompute)
+
+
+def test_quantized_rvq_429_when_compute_slots_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no free compute slot, a (cache-miss) request sheds load with 429 + Retry-After."""
+    rng = np.random.default_rng(0)
+    window = rng.standard_normal((64, 64, 128)).astype(np.float32)
+    _patch_read_region(monkeypatch, window)
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()  # take the only slot so the handler can't get one
+    monkeypatch.setattr(server, "_COMPUTE_SEM", sem)
+    monkeypatch.setattr(server, "_CACHE", None)
+    client = server.app.test_client()
+    resp = client.post(
+        "/quantized_rvq",
+        json={"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k1": 4, "k2": 4},
+    )
+    assert resp.status_code == 429  # noqa: PLR2004
+    assert resp.headers.get("Retry-After") == "2"
+    sem.release()
