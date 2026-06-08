@@ -57,7 +57,7 @@ def _plot(m: pd.DataFrame, tag: str, out_dir: str) -> Path:
             grp["retention"],
             s=90,
             color=colours.get(int(t), "#555"),
-            label=f"t={int(t)}",
+            label=f"p={int(t)}",
             zorder=3,
         )
         for _, r in grp.iterrows():

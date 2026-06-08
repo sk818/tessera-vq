@@ -1,6 +1,7 @@
 # Per-tile vector quantization for Tessera embedding compression — tech note
 
-**Author:** Tessera-VQ study (S. Keshav, CAC project). **Date:** 2026-06-05.
+**Author:** Tessera-VQ study (S. Keshav, CAC project). **Date:** 2026-06-05
+(rev. 2026-06-08: gzip replaces RLE for the stage-1 plane; tile size denoted `p`).
 **Status:** results note for the engineering recommendation to GeoTessera.
 
 ---
