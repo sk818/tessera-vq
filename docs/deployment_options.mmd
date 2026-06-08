@@ -1,0 +1,23 @@
+flowchart TB
+    classDef bolt fill:#eef5ff,stroke:#3b78c3,color:#10243e;
+    classDef native fill:#eafaf1,stroke:#2e8b57,color:#0f3d27;
+    classDef axis fill:#fff7e6,stroke:#d9a441,color:#5a3d00;
+
+    AXIS["<b>Two design axes for the bolt-on</b><br/>source: Cambridge store  vs  S3<br/>access: TEE-only  vs  open to anyone"]:::axis
+
+    subgraph BOLT["Bolt-on VQ &mdash; quantize on demand on top of raw Tessera embeddings"]
+        direction TB
+        S1["<b>Stage 1</b><br/>access: TEE only<br/>source: Cambridge store<br/><i>low compute, narrow reach</i>"]:::bolt
+        S2["<b>Stage 2</b><br/>access: TEE only<br/>source: Cambridge <i>or</i> S3<br/><i>bolt-on needs fast S3 access</i>"]:::bolt
+        S3["<b>Stage 3</b><br/>access: open to anyone<br/>source: Cambridge or S3<br/><i>heavy load &rarr; large provisioned server</i>"]:::bolt
+    end
+
+    subgraph NATIVE["Native VQ &mdash; quantize inside Tessera embedding generation"]
+        direction TB
+        S4["<b>Stage 4</b><br/>no bolt-on<br/>release embeddings in <b>VQ format only</b><br/><i>huge storage reduction, if fidelity suffices</i>"]:::native
+    end
+
+    AXIS -.-> S1
+    S1 -->|widen source| S2
+    S2 -->|widen access| S3
+    S3 -->|if VQ good enough, drop the bolt-on| S4

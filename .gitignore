@@ -37,3 +37,6 @@ Thumbs.db
 
 # Private hand-off docs (not for the public repo)
 docs/tee-integration.md
+
+# LaTeX build artifact (source is docs/paper_vq_compression.tex)
+docs/paper_vq_compression.pdf
