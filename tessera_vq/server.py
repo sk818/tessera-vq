@@ -383,11 +383,17 @@ def _check_bbox_size(bbox: tuple[float, ...]) -> str | None:
 
 
 def main() -> None:
-    """Serve the app via waitress."""
+    """Serve the app via waitress.
+
+    Bind address is ``TESSERA_VQ_BIND`` (``host:port``, default ``0.0.0.0:8000``).
+    Set it to ``127.0.0.1:8010`` to keep the bolt-on internal behind an nginx (or
+    other) reverse proxy that owns the public port and does per-IP rate limiting.
+    """
     from waitress import serve  # type: ignore  # noqa: PLC0415
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    serve(app, host="0.0.0.0", port=8000)  # noqa: S104
+    host, _, port = os.environ.get("TESSERA_VQ_BIND", "0.0.0.0:8000").rpartition(":")
+    serve(app, host=host or "0.0.0.0", port=int(port))  # noqa: S104
 
 
 if __name__ == "__main__":
