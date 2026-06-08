@@ -42,6 +42,7 @@ from tessera_vq.sweep import (
     quantize_window_residual_norms_rvq,
     rvq_quantize_window_for_serving,
 )
+from tessera_vq.tile_cache import TileCache
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,30 @@ logger = logging.getLogger(__name__)
 # Override on the server with: export TESSERA_VQ_MAX_BBOX_KM=20
 _MAX_BBOX_KM = float(os.environ.get("TESSERA_VQ_MAX_BBOX_KM", "10.0"))
 _KM_PER_DEG_LAT = 111.32
+
+# Durable RVQ response cache (WS-2). Off unless TESSERA_VQ_CACHE_DIR is set, so dev/tests
+# never write a cache; michael enables it via env. Default cap 500 GB (~287k tiles).
+_WIRE_FORMAT = "rvq-int8-rle-1"  # bump if the /quantized_rvq NPZ schema changes
+_CACHE_DIR = os.environ.get("TESSERA_VQ_CACHE_DIR")
+_CACHE_MAX_GB = float(os.environ.get("TESSERA_VQ_CACHE_MAX_GB", "500"))
+_CACHE: TileCache | None = TileCache(_CACHE_DIR, int(_CACHE_MAX_GB * 1e9)) if _CACHE_DIR else None
+
+
+class _NoDataError(Exception):
+    """No embeddings for the requested bbox (-> 404); not cached."""
+
+
+class _NoTilesError(Exception):
+    """No all-finite tiles fit the bbox at this t (-> 422); not cached."""
+
+
+def _rvq_cache_key(
+    bbox: tuple[float, ...], year: int, t: int, k1: int, k2: int, m: str, ssz: int, seed: int
+) -> str:
+    """Canonical cache key; bbox rounded to ~0.1 m to absorb float jitter."""
+    b = ",".join(f"{v:.6f}" for v in bbox)
+    return f"{_WIRE_FORMAT}|{b}|{year}|{t}|{k1}|{k2}|{m}|{ssz}|{seed}"
+
 
 app = Flask("tessera_vq")
 
@@ -143,49 +168,60 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
     year = int(body.get("year", 2024))
     sample_size = int(body.get("sample_size", 2000))
     seed = int(body.get("seed", 42))
-    mosaic, path = read_region(bbox, year)
-    if mosaic is None:
+
+    def _compute() -> bytes:
+        """Read + quantize + pack the NPZ. Raises _NoDataError/_NoTilesError (never cached)."""
+        mosaic, path = read_region(bbox, year)
+        if mosaic is None:
+            raise _NoDataError
+        cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
+            mosaic, t, k1, k2, m, seed, sample_size=sample_size
+        )
+        logger.info(
+            "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
+            bbox,
+            year,
+            t,
+            k1,
+            k2,
+            m,
+            path,
+            positions.shape[0],
+        )
+        if positions.shape[0] == 0:
+            raise _NoTilesError(_no_tiles_message(mosaic.shape, t))
+        # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is the
+        # white residual and stays raw. Codebooks ship as per-dim uint8 (q + lo/hi).
+        idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
+        cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
+        cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
+        buf = io.BytesIO()
+        np.savez(
+            buf,
+            codebooks1_q=cb1_q,
+            codebooks1_lo=cb1_lo,
+            codebooks1_hi=cb1_hi,
+            idx1_values=idx1_values,
+            idx1_lengths=idx1_lengths.astype(np.uint32),
+            idx1_runs=idx1_runs.astype(np.int32),
+            codebooks2_q=cb2_q,
+            codebooks2_lo=cb2_lo,
+            codebooks2_hi=cb2_hi,
+            indices2=idxs2,
+            positions=positions,
+            meta=np.asarray([t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
+            distance=np.asarray(m),
+        )
+        return buf.getvalue()
+
+    key = _rvq_cache_key(bbox, year, t, k1, k2, m, sample_size, seed)
+    try:
+        data = _CACHE.get_or_compute(key, _compute) if _CACHE else _compute()
+    except _NoDataError:
         return _bad_request("no embeddings available for bbox", code=404)
-    cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
-        mosaic, t, k1, k2, m, seed, sample_size=sample_size
-    )
-    logger.info(
-        "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
-        bbox,
-        year,
-        t,
-        k1,
-        k2,
-        m,
-        path,
-        positions.shape[0],
-    )
-    if positions.shape[0] == 0:
-        return _bad_request(_no_tiles_message(mosaic.shape, t), code=422)
-    # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is the
-    # white residual and stays raw (it does not compress). Codebooks ship as per-dim
-    # uint8 (q + lo/hi scales) instead of float32. All decoded back by the client.
-    idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
-    cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
-    cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
-    buf = io.BytesIO()
-    np.savez(
-        buf,
-        codebooks1_q=cb1_q,
-        codebooks1_lo=cb1_lo,
-        codebooks1_hi=cb1_hi,
-        idx1_values=idx1_values,
-        idx1_lengths=idx1_lengths.astype(np.uint32),
-        idx1_runs=idx1_runs.astype(np.int32),
-        codebooks2_q=cb2_q,
-        codebooks2_lo=cb2_lo,
-        codebooks2_hi=cb2_hi,
-        indices2=idxs2,
-        positions=positions,
-        meta=np.asarray([t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
-        distance=np.asarray(m),
-    )
-    return Response(buf.getvalue(), mimetype="application/octet-stream")
+    except _NoTilesError as exc:
+        return _bad_request(str(exc), code=422)
+    return Response(data, mimetype="application/octet-stream")
 
 
 @app.post("/residuals")  # type: ignore

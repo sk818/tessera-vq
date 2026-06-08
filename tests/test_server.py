@@ -12,6 +12,7 @@ from tessera_vq import server
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
 from tessera_vq.entropy import rle_decode_stack
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
+from tessera_vq.tile_cache import TileCache
 
 
 def test_bbox_size_km_known_cambridge_box() -> None:
@@ -154,3 +155,26 @@ def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) 
         )
         assert idx1.shape == (4, 32, 32)
         assert int(idx1.max()) < 4
+
+
+def test_quantized_rvq_cache_serves_second_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """With a cache configured, an identical second request is served without recompute."""
+    rng = np.random.default_rng(0)
+    window = rng.standard_normal((64, 64, 128)).astype(np.float32)
+    calls = {"n": 0}
+
+    def counting_read(bbox: object, year: object) -> tuple[npt.NDArray[np.float32], str]:
+        calls["n"] += 1
+        return window, "test"
+
+    monkeypatch.setattr(server, "read_region", counting_read)
+    monkeypatch.setattr(server, "_CACHE", TileCache(tmp_path, 10**9))
+    client = server.app.test_client()
+    body = {"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k1": 4, "k2": 4}
+    r1 = client.post("/quantized_rvq", json=body)
+    r2 = client.post("/quantized_rvq", json=body)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.data == r2.data  # identical bytes
+    assert calls["n"] == 1  # second request hit the cache (no recompute)
