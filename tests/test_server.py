@@ -11,7 +11,6 @@ import pytest
 
 from tessera_vq import server
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
-from tessera_vq.entropy import rle_decode_stack
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
 from tessera_vq.tile_cache import TileCache
 
@@ -148,12 +147,10 @@ def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) 
             data["codebooks1_q"], data["codebooks1_lo"], data["codebooks1_hi"]
         )
         assert cb1.shape == (4, 4, 128) and cb1.dtype == np.float32
-        # idx1 ships RLE'd (idx1_values/lengths/runs), idx2 stays raw
-        assert "indices1" not in data.files and "idx1_values" in data.files
+        # idx1/idx2 ship as raw uint8 planes (DEFLATE-compressed NPZ), not RLE
+        assert "idx1_values" not in data.files and "indices1" in data.files
         assert data["indices2"].shape == (4, 32, 32)
-        idx1 = rle_decode_stack(
-            data["idx1_values"], data["idx1_lengths"], data["idx1_runs"], 32, 32
-        )
+        idx1 = data["indices1"]
         assert idx1.shape == (4, 32, 32)
         assert int(idx1.max()) < 4
 

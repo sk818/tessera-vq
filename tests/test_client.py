@@ -20,7 +20,6 @@ from tessera_vq.client import (
     reconstruct_from_structure,
 )
 from tessera_vq.codebook_codec import quantize_codebook_uint8
-from tessera_vq.entropy import rle_encode_stack
 
 
 def _make_npz(
@@ -68,20 +67,17 @@ def _make_rvq_npz(
     cb2 = rng.standard_normal((n, k2, 128)).astype(np.float32)
     idx1 = rng.integers(0, k1, size=(n, t, t), dtype=np.uint8)
     idx2 = rng.integers(0, k2, size=(n, t, t), dtype=np.uint8)
-    v1, l1, r1 = rle_encode_stack(idx1)
     cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cb1)
     cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cb2)
     pos_arr = np.asarray(positions, dtype=np.int32) if n else np.zeros((0, 2), dtype=np.int32)
     meta = np.array([t, k1, k2, 2024, full_h, full_w], dtype=np.int32)
     buf = io.BytesIO()
-    np.savez(
+    np.savez_compressed(
         buf,
         codebooks1_q=cb1_q,
         codebooks1_lo=cb1_lo,
         codebooks1_hi=cb1_hi,
-        idx1_values=v1,
-        idx1_lengths=l1.astype(np.uint32),
-        idx1_runs=r1.astype(np.int32),
+        indices1=idx1,
         codebooks2_q=cb2_q,
         codebooks2_lo=cb2_lo,
         codebooks2_hi=cb2_hi,

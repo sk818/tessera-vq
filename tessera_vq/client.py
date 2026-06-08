@@ -41,7 +41,6 @@ import numpy.typing as npt
 from affine import Affine
 
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
-from tessera_vq.entropy import rle_decode_stack
 
 Distance = Literal["euclidean", "cosine"]
 
@@ -265,13 +264,12 @@ def _structure_from_npz(
             year = int(meta[3])
             full_h, full_w = int(meta[4]), int(meta[5])
             k2: int | None = k2_val
-            # codebooks arrive per-dim uint8 (q + lo/hi); idx1 row-major RLE'd; idx2 raw.
+            # codebooks arrive per-dim uint8 (q + lo/hi); idx1/idx2 are raw uint8 planes
+            # inside a DEFLATE-compressed NPZ (np.savez_compressed).
             cb1: npt.NDArray[np.float32] = dequantize_codebook_uint8(
                 data["codebooks1_q"], data["codebooks1_lo"], data["codebooks1_hi"]
             )
-            idx1: npt.NDArray[Any] = rle_decode_stack(
-                data["idx1_values"], data["idx1_lengths"], data["idx1_runs"], t, t
-            )
+            idx1: npt.NDArray[Any] = data["indices1"]
             cb2: npt.NDArray[np.float32] | None = dequantize_codebook_uint8(
                 data["codebooks2_q"], data["codebooks2_lo"], data["codebooks2_hi"]
             )

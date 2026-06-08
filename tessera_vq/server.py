@@ -37,7 +37,6 @@ from flask import Flask, Response, jsonify, request
 
 from tessera_vq.codebook_codec import quantize_codebook_uint8
 from tessera_vq.data import read_region
-from tessera_vq.entropy import rle_encode_stack
 from tessera_vq.sweep import (
     Distance,
     quantize_window_for_serving,
@@ -56,7 +55,7 @@ _KM_PER_DEG_LAT = 111.32
 
 # Durable RVQ response cache (WS-2). Off unless TESSERA_VQ_CACHE_DIR is set, so dev/tests
 # never write a cache; michael enables it via env. Default cap 500 GB (~287k tiles).
-_WIRE_FORMAT = "rvq-int8-rle-1"  # bump if the /quantized_rvq NPZ schema changes
+_WIRE_FORMAT = "rvq-int8-gz-1"  # bump if the /quantized_rvq NPZ schema changes
 _CACHE_DIR = os.environ.get("TESSERA_VQ_CACHE_DIR")
 _CACHE_MAX_GB = float(os.environ.get("TESSERA_VQ_CACHE_MAX_GB", "500"))
 _CACHE: TileCache | None = TileCache(_CACHE_DIR, int(_CACHE_MAX_GB * 1e9)) if _CACHE_DIR else None
@@ -221,20 +220,18 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
             )
             if positions.shape[0] == 0:
                 raise _NoTilesError(_no_tiles_message(mosaic.shape, t))
-            # idx1 is spatially smooth -> row-major RLE shrinks the wire payload; idx2 is
-            # the white residual and stays raw. Codebooks ship as per-dim uint8 (q+lo/hi).
-            idx1_values, idx1_lengths, idx1_runs = rle_encode_stack(idxs1)
+            # idx1/idx2 ship as raw uint8 planes inside a DEFLATE-compressed NPZ:
+            # np.savez_compressed beats byte-aligned RLE on the smooth idx1 (and
+            # compresses the codebooks for free); the white idx2 stays ~1 B/px.
             cb1_q, cb1_lo, cb1_hi = quantize_codebook_uint8(cbs1)
             cb2_q, cb2_lo, cb2_hi = quantize_codebook_uint8(cbs2)
             buf = io.BytesIO()
-            np.savez(
+            np.savez_compressed(
                 buf,
                 codebooks1_q=cb1_q,
                 codebooks1_lo=cb1_lo,
                 codebooks1_hi=cb1_hi,
-                idx1_values=idx1_values,
-                idx1_lengths=idx1_lengths.astype(np.uint32),
-                idx1_runs=idx1_runs.astype(np.int32),
+                indices1=idxs1,
                 codebooks2_q=cb2_q,
                 codebooks2_lo=cb2_lo,
                 codebooks2_hi=cb2_hi,
