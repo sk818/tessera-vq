@@ -1,6 +1,6 @@
 # mypy: ignore-errors
-# Vendored verbatim from ucam-eo/tee (MIT), commit 7081076, retrieved 2026-05-24:
-#   packages/tessera-eval/tessera_eval/zarr_utils.py
+# Vendored verbatim from tessera-eval (MIT): tessera_eval/zarr_utils.py
+#   https://github.com/ucam-eo/tessera-eval  (originally from ucam-eo/tee, commit 7081076)
 # Used by tessera_vq.data for zarr coverage probing and region reads.
 # Excluded from ruff/mypy in pyproject (kept identical to upstream).
 """Shared zarr utilities for GeoTessera tile access.

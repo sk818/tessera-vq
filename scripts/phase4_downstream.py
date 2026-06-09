@@ -11,9 +11,10 @@ Per cell it records ``f1_raw_mean/sd``, ``f1_recon_mean/sd`` and the paired
 ``delta_f1_mean/sd`` across folds. Tiles are re-fetched per cell to keep memory to one
 cell's pixels; GeoTessera disk-caches downloads, so the repeat cost is decode-only.
 
-Requires the cross-repo deps (personal repos): ``geotessera`` and ``tessera_eval``
-(``uv pip install -e ../blore/packages/tessera-eval`` + geotessera), plus geopandas /
-rasterio. Run once per dataset, e.g. Austria (17 crops) and Cumbria/Naddle (habitats):
+Requires the cross-repo deps: ``geotessera`` and ``tessera_eval``
+(``uv pip install "tessera-eval @ git+https://github.com/ucam-eo/tessera-eval"`` +
+geotessera), plus geopandas / rasterio. Run once per dataset, e.g. Austria (17 crops)
+and Cumbria/Naddle (habitats):
 
     uv run python scripts/phase4_downstream.py \
         --shapefile ../blore/austria.zip --field <COLUMN> --tag austria
