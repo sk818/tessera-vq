@@ -9,8 +9,9 @@ the *same* row-major idx1 byte plane with several codecs and reports bytes/px:
 - ``zstd_row``: zstandard level 19 on the uint8 plane.
 - ``rle_then_gzip``: gzip applied to the RLE symbol+length byte stream.
 
-All divided by n_px. Aggregated as the mean across tiles. Prints a table; does not
-write Parquet (this is an exploratory check, not a locked result).
+All divided by n_px. Aggregated as the mean across tiles. Prints a table and, with
+``--out-parquet``, writes a provenance-tagged per-cell table (gzip-based
+``total_compressed_Bpx`` / ``x_int8_compressed``) for ``scripts/phase4_pareto.py``.
 
 Run::
 

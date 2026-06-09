@@ -21,8 +21,8 @@ def rle_encode(
     if flat.size == 0:
         return np.zeros(0, np.int64), np.zeros(0, np.int64)
     change = np.flatnonzero(flat[1:] != flat[:-1])
-    starts = np.concatenate(([0], change + 1))
-    ends = np.concatenate((change, [flat.size - 1]))
+    starts = np.concatenate((np.array([0], np.int64), change + 1))
+    ends = np.concatenate((change, np.array([flat.size - 1], np.int64)))
     values = flat[starts].astype(np.int64)
     lengths = (ends - starts + 1).astype(np.int64)
     return values, lengths

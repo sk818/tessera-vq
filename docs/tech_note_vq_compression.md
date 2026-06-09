@@ -58,9 +58,9 @@ whether euclidean k-means is the right tool.
   directions — but the Shapiro–Wilk statistic sat at ≈ 0.99 (1.0 = exactly Gaussian).
   The rejections are the usual large-sample artifact (millions of pixels make tiny
   departures "significant"); the *shape* is close to Gaussian.
-- **The space is anisotropic.** Per-dimension means are offset (e.g. dim 0 mean ≈ 4.2)
-  and variances span a wide range (≈ 1.8–5.4), i.e. dimensions carry different scales and
-  centres. No dimensions are collapsed.
+- **The space is anisotropic.** Per-dimension means are offset (spanning ≈ −3.9 to 5.1;
+  e.g. dim 0 mean ≈ 4.2) and variances span a wide range (≈ 1.3–15.0), i.e. dimensions
+  carry different scales and centres. No dimensions are collapsed.
 - **Euclidean beats cosine decisively for reconstruction.** In the Phase-2 sweep, median
   per-pixel reconstruction error under euclidean k-means was ≈ 4.6 (L2) versus ≈ 27 under
   cosine k-means at the same k — cosine discards magnitude, which carries real signal
