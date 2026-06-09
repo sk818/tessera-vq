@@ -1,7 +1,6 @@
-"""Tests for tessera_vq.sweep: vectorised k-means and the (t, K, m) sweep."""
+"""Tests for tessera_vq.sweep: blockwise k-means delegation and the (t, K) sweep."""
 
 import numpy as np
-import pytest
 
 from tessera_vq.phase3_sweep import rvq_errors
 from tessera_vq.sweep import (
@@ -60,16 +59,6 @@ def test_fast_quantize_tile_recovers_three_clusters() -> None:
     )
     # noise has L2 magnitude ~ 0.1 * sqrt(128) ~= 1.13
     assert err < 1.5
-
-
-def test_fast_quantize_tile_cosine_path() -> None:
-    """Cosine distance should also produce a valid k-clustering."""
-    tile = _three_cluster_tile(32, 32, 128, seed=1)
-    centers, idx = fast_quantize_tile(tile, k=4, distance="cosine", seed=42)
-    assert centers.shape == (4, 128)
-    assert idx.shape == (32, 32)
-    assert int(idx.min()) >= 0
-    assert int(idx.max()) < 4
 
 
 def test_reconstruction_quantiles_zero_when_identical() -> None:
@@ -131,13 +120,6 @@ def test_rvq_quantize_tile_lowers_error_vs_single_stage() -> None:
     assert cb1.shape == (4, 128) and cb2.shape == (4, 128)
     assert idx1.shape == (32, 32) and idx2.shape == (32, 32)
     assert rvq_err <= single_err  # RVQ never worse than stage 1 alone
-
-
-def test_rvq_quantize_tile_rejects_cosine() -> None:
-    """Cosine RVQ is not supported (stage 1 discards magnitude)."""
-    tile = _three_cluster_tile(16, 16, 32, seed=11)
-    with pytest.raises(NotImplementedError, match="euclidean"):
-        rvq_quantize_tile(tile, k1=4, k2=4, m="cosine", seed=42)
 
 
 def test_quantize_window_residual_norms_rvq_smaller_than_single_stage() -> None:

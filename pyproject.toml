@@ -24,6 +24,7 @@ dependencies = [
 # Install with `pip install "tessera-vq[server]"` on the host that runs
 # tessera_vq.server (the systemd unit on michael).
 server = [
+    "blockwise-kmeans>=0.1",
     "flask>=3.0",
     "waitress>=3.0",
     "scikit-learn>=1.5",
@@ -57,6 +58,12 @@ dev = [
 #   torch, matplotlib, seaborn, tqdm, xarray, zstandard.
 # zstandard appears only in an entropy.py Phase 0 stub docstring; re-declare
 # under [server] (or a new [entropy] extra) when the stub is implemented.
+
+# blockwise-kmeans is the single source of truth for k-means (extracted from the
+# old tessera_vq.kmeans_fast). Pinned to the public GitHub repo by tag, so the
+# michael bolt-on deploy resolves it over https like any other dependency.
+[tool.uv.sources]
+blockwise-kmeans = { git = "https://github.com/sk818/blockwise-kmeans", tag = "v0.1.0" }
 
 # Explicit package declaration: the repo uses a flat layout with output dirs
 # (results/, figures/, logs/, notebooks/) that would otherwise confuse setuptools

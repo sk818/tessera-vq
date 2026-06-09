@@ -350,6 +350,14 @@ wheels = [
 ]
 
 [[package]]
+name = "blockwise-kmeans"
+version = "0.1.0"
+source = { git = "https://github.com/sk818/blockwise-kmeans?tag=v0.1.0#bc126a633b471a25daeeaf232bfd08d2b28a7766" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.5.20"
 source = { registry = "https://pypi.org/simple" }
@@ -3795,7 +3803,7 @@ wheels = [
 
 [[package]]
 name = "tessera-vq"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "affine" },
@@ -3804,6 +3812,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "blockwise-kmeans" },
     { name = "flask" },
     { name = "geotessera" },
     { name = "hilbertcurve" },
@@ -3825,6 +3834,7 @@ dev = [
     { name = "waitress" },
 ]
 server = [
+    { name = "blockwise-kmeans" },
     { name = "flask" },
     { name = "geotessera" },
     { name = "joblib" },
@@ -3834,6 +3844,7 @@ server = [
     { name = "waitress" },
 ]
 sweep = [
+    { name = "blockwise-kmeans" },
     { name = "flask" },
     { name = "geotessera" },
     { name = "hilbertcurve" },
@@ -3851,6 +3862,7 @@ sweep = [
 [package.metadata]
 requires-dist = [
     { name = "affine", specifier = ">=2.4" },
+    { name = "blockwise-kmeans", marker = "extra == 'server'", git = "https://github.com/sk818/blockwise-kmeans?tag=v0.1.0" },
     { name = "flask", marker = "extra == 'server'", specifier = ">=3.0" },
     { name = "geotessera", marker = "extra == 'server'", specifier = ">=0.8" },
     { name = "hilbertcurve", marker = "extra == 'sweep'", specifier = ">=2.0" },

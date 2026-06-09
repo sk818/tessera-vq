@@ -13,6 +13,7 @@ repos:
           - numpy
           - pandas-stubs
           - types-PyYAML
+          - "blockwise-kmeans @ git+https://github.com/sk818/blockwise-kmeans@v0.1.0"
   - repo: local
     hooks:
       - id: pytest-fast

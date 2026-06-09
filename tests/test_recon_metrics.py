@@ -8,8 +8,8 @@ own stage-1 reconstruction.
 from __future__ import annotations
 
 import numpy as np
+from blockwise_kmeans import quantize_tile_large
 
-from tessera_vq.kmeans_fast import quantize_tile_large
 from tessera_vq.metrics import (
     aggregate_reconstruction_metrics,
     reconstruction_metrics,
@@ -49,7 +49,8 @@ def test_relative_error_is_scale_free() -> None:
     cb, idx = quantize_tile_large(tile, k=4, seed=42)
     recon = cb[idx]
     m1 = reconstruction_metrics(tile, recon)
-    m2 = reconstruction_metrics(tile * 1000.0, recon * 1000.0)
+    scale = np.float32(1000.0)
+    m2 = reconstruction_metrics(tile * scale, recon * scale)
     for key in ("rel_l2_mean", "rel_l2_p50", "rel_l2_p90", "rel_l2_p99", "r2"):
         assert abs(m1[key] - m2[key]) < 1e-6
 

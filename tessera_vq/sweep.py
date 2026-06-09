@@ -1,12 +1,10 @@
-"""Fast per-tile (t, K, m) sweep for the interactive bolt-on.
+"""Fast per-tile (t, K) sweep for the interactive bolt-on.
 
-K-means is the per-call hot loop, so we keep it dependency-free and tight:
-- subsample ``sample_size`` pixels per tile for the *fit*, then assign all pixels;
-- the fit is a vectorised numpy Lloyd's iteration (one-hot ``onehot.T @ x`` update,
-  no Python per-point loops);
-- the assign step is a memory-bounded ``x @ centers.T`` argmax in blocks;
-- ``distance="cosine"`` L2-normalises before clustering (euclidean k-means on the
-  unit sphere ≡ cosine k-means).
+K-means is the per-call hot loop; it is delegated to ``blockwise_kmeans`` (the
+project's single source of truth: a k-scaled sampled fit plus an exact, blocked
+BLAS-GEMM assignment). Euclidean only — the ``m``/``distance`` arguments are kept
+for signature compatibility with the bolt-on API but are ignored (cosine was
+dropped).
 
 Designed for use inside ``tessera_vq.server`` (Flask /sweep endpoint).
 """
@@ -17,87 +15,33 @@ from typing import Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
+from blockwise_kmeans import assign_blocked, kmeans_fit
 
 Distance = Literal["euclidean", "cosine"]
 
-_DEFAULT_KMEANS_ITERS = 20  # Lloyd iterations on the sample.
-_KMEANS_CONVERGE_TOL = 1e-4  # ||new - old|| frobenius shift to stop early.
-
-
-def _normalise(x: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
-    """L2-normalise rows (for the cosine-via-euclidean trick)."""
-    n = np.linalg.norm(x, axis=1, keepdims=True)
-    return (x / np.where(n > 0, n, 1.0)).astype(np.float32, copy=False)
-
-
-def _vectorised_kmeans_fit(
-    x: npt.NDArray[np.float32], k: int, seed: int, *, n_iter: int = _DEFAULT_KMEANS_ITERS
-) -> npt.NDArray[np.float32]:
-    """Lloyd's k-means with vectorised numpy ops; returns ``(k_eff, d)`` centroids.
-
-    The update step uses a one-hot label matrix and a single ``onehot.T @ x`` matmul
-    (no Python loops over points or clusters). Empty clusters are re-seeded.
-    """
-    rng = np.random.default_rng(seed)
-    n = x.shape[0]
-    k_eff = min(k, n)
-    centers = x[rng.choice(n, size=k_eff, replace=False)].astype(np.float32, copy=True)
-    for _ in range(n_iter):
-        cc = (centers * centers).sum(axis=1)
-        labels = (x @ centers.T - 0.5 * cc).argmax(axis=1)
-        onehot = np.zeros((n, k_eff), dtype=np.float32)
-        onehot[np.arange(n), labels] = 1.0
-        counts = onehot.sum(axis=0)
-        nonempty = counts > 0
-        new_centers = np.zeros_like(centers)
-        new_centers[nonempty] = (onehot.T @ x)[nonempty] / counts[nonempty, None]
-        empty = np.where(~nonempty)[0]
-        if empty.size:
-            new_centers[empty] = x[rng.choice(n, size=empty.size, replace=False)]
-        shift = float(np.linalg.norm(new_centers - centers))
-        centers = new_centers
-        if shift < _KMEANS_CONVERGE_TOL:
-            break
-    return cast("npt.NDArray[np.float32]", centers)
+_DEFAULT_KMEANS_ITERS = 20  # Lloyd iterations on the fit subsample.
 
 
 def fast_quantize_tile(
     tile: npt.NDArray[np.float32],
     k: int,
-    distance: Distance,
+    distance: Distance = "euclidean",
     seed: int = 42,
     *,
     sample_size: int = 2000,
     n_iter: int = _DEFAULT_KMEANS_ITERS,
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
-    """Fast sampled k-means quantisation of an ``(H, W, 128)`` tile."""
+    """Sampled k-means quantisation of an ``(H, W, 128)`` tile via ``blockwise_kmeans``.
+
+    Euclidean only; ``distance`` is accepted for API compatibility but ignored.
+    ``sample_size`` caps the fit subsample. Returns ``(centers (k_eff, C), indices
+    (H, W) int32)``.
+    """
     h, w, c = tile.shape
     x = tile.reshape(-1, c).astype(np.float32, copy=False)
-    if distance == "cosine":
-        x = _normalise(x)
-    rng = np.random.default_rng(seed)
-    if sample_size and x.shape[0] > sample_size:
-        x_fit = x[rng.choice(x.shape[0], size=sample_size, replace=False)]
-    else:
-        x_fit = x
-    centers = _vectorised_kmeans_fit(x_fit, k, seed, n_iter=n_iter)
-    indices = _assign_to_centers(x, centers)
+    centers = kmeans_fit(x, k, seed=seed, sample_cap=sample_size, n_iter=n_iter)
+    indices = assign_blocked(x, centers)
     return centers, indices.reshape(h, w)
-
-
-def _assign_to_centers(
-    x: npt.NDArray[np.float32], centers: npt.NDArray[np.float32], block: int = 65536
-) -> npt.NDArray[np.int32]:
-    """Memory-bounded argmin over pairwise euclidean distance."""
-    n = x.shape[0]
-    out = np.empty(n, dtype=np.int32)
-    cc = (centers * centers).sum(axis=1)
-    for i in range(0, n, block):
-        xb = x[i : i + block]
-        # ||x||^2 + ||c||^2 - 2 x.c  -> argmin over c is same as argmax of x.c - 0.5||c||^2
-        score = xb @ centers.T - 0.5 * cc
-        out[i : i + block] = score.argmax(axis=1).astype(np.int32)
-    return out
 
 
 def reconstruction_quantiles(
@@ -202,15 +146,9 @@ def rvq_quantize_tile(
     redoing stage 1, compute the residual once and call ``fast_quantize_tile`` on
     it directly.
 
-    Only ``m="euclidean"`` is supported: cosine stage 1 quantises direction and
-    discards magnitude, so the residual in the original space is dominated by that
-    magnitude and stage 2 wouldn't be quantising anything meaningful.
+    Euclidean only; ``m`` is accepted for API compatibility but ignored (cosine
+    stage 1 would discard magnitude, leaving stage 2 nothing meaningful to quantise).
     """
-    if m != "euclidean":
-        raise NotImplementedError(
-            "rvq_quantize_tile supports m='euclidean' only (cosine RVQ would need "
-            "separate magnitude handling)."
-        )
     centers1, indices1 = fast_quantize_tile(tile, k1, m, seed, sample_size=sample_size)
     residual = (tile - centers1[indices1]).astype(np.float32, copy=False)
     centers2, indices2 = fast_quantize_tile(residual, k2, m, seed + 1, sample_size=sample_size)
@@ -347,12 +285,7 @@ def quantize_window_residual_norms(
 
     Returns a flat ``(n_pixels,)`` float32 array where ``n_pixels`` is the total count
     of pixels across kept (all-finite) tiles. Useful for plotting a histogram of "how
-    off" each pixel's reconstruction is.
-
-    Note: for ``m="cosine"`` the centroids live on the unit sphere, so this L2 norm is
-    dominated by the original embedding magnitude rather than the angular error. For
-    cosine-as-direction diagnostics, prefer ``reconstruction_quantiles`` which also
-    reports cosine distance.
+    off" each pixel's reconstruction is. Euclidean only (``m`` is ignored).
     """
     h, w, _ = window.shape
     chunks: list[npt.NDArray[np.float32]] = []

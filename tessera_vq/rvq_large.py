@@ -1,7 +1,7 @@
 """Two-stage residual VQ for large tiles, built on the BLAS-GEMM k-means (WS-1).
 
-Mirrors ``tessera_vq.sweep.rvq_quantize_tile`` but uses ``kmeans_fast`` so it scales
-to t up to 1024. Stage 1 quantises the tile into ``k1`` base prototypes; stage 2
+Mirrors ``tessera_vq.sweep.rvq_quantize_tile`` but uses ``blockwise_kmeans`` so it
+scales to t up to 1024. Stage 1 quantises the tile into ``k1`` base prototypes; stage 2
 quantises the *residual* into ``k2`` prototypes. The reconstruction is
 ``codebook1[idx1] + codebook2[idx2]``. Euclidean only (RVQ discards magnitude
 direction information at stage 1, so cosine is not meaningful here).
@@ -17,9 +17,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
+from blockwise_kmeans import assign_blocked, kmeans_fit, quantize_tile_large
 
 from tessera_vq.codebook_codec import roundtrip_uint8
-from tessera_vq.kmeans_fast import assign_blocked, kmeans_fit, quantize_tile_large
 
 
 @dataclass(frozen=True)
