@@ -1,7 +1,7 @@
 """Data loaders for Tessera embeddings, Pool A diagnostics, and downstream tasks.
 
-Implemented in Phase 1 (docs/spec.md) over geotessera (zarr via vendored zarr_utils
-from ucam-eo/tee, with a bounding-box fallback): ``read_region``,
+Implemented in Phase 1 (docs/spec.md) over geotessera (zarr via tessera-eval's
+``zarr_utils``, with a bounding-box fallback): ``read_region``,
 ``iter_pool_a_windows``, ``sample_isotropy_points``. Land-only sampling from
 geotessera coverage; no embeddings persisted. ``load_downstream`` is deferred
 (Phases 5-6).
@@ -17,10 +17,9 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 from joblib import Parallel, delayed
+from tessera_eval import zarr_utils as _zarr_utils
 
-from tessera_vq import zarr_utils as _zarr_utils
-
-# Vendored zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
+# tessera_eval.zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
 zarr_utils: Any = _zarr_utils
 
 logger = logging.getLogger(__name__)
