@@ -34,7 +34,7 @@ server = [
     "geotessera>=0.8",
     # zarr region reads (tessera_vq.data / canonical) reuse tessera-eval's
     # zarr_utils — single source of the cross-UTM-zone merge.
-    "tessera-eval @ git+https://github.com/ucam-eo/tessera-eval.git@v1.0.2",
+    "tessera-eval @ git+https://github.com/ucam-eo/tessera-eval.git@v1.0.3",
 ]
 # Large-scale parameter sweeps + analysis (tessera_vq.sweep, UK isotropy
 # scripts, parquet-with-provenance outputs). Pulls server bits transitively.
