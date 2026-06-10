@@ -151,7 +151,8 @@ MIT — see [`LICENSE`](LICENSE).
 ## Layout
 
 - `tessera_vq/` — library (`data`, `quantize`, `sweep`, `metrics`, `io_utils`,
-  `client`, `server`, vendored `zarr_utils`).
+  `client`, `server`). Zarr region reads come from the
+  [`tessera-zarr-utils`](https://github.com/ucam-eo/tessera-zarr-utils) package.
 - `scripts/` — analytical-phase entry points (isotropy, reconstruction sweep).
 - `tests/` — unit tests on synthetic fixtures.
 - `docs/spec.md` — design / phase plan.
