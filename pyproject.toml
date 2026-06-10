@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-vq"
-version = "0.5.3"
+version = "0.5.4"
 description = "Per-tile vector quantisation of Tessera embeddings: library, optional server, plug-compatible client."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -31,10 +31,11 @@ server = [
     "scipy>=1.13",
     "joblib>=1.4",
     "rasterio>=1.3",
-    "geotessera>=0.8",
-    # zarr region reads (tessera_vq.data / canonical) reuse tessera-eval's
-    # zarr_utils — single source of the cross-UTM-zone merge.
-    "tessera-eval @ git+https://github.com/ucam-eo/tessera-eval.git@v1.0.3",
+    "geotessera>=0.9",
+    # zarr region reads (tessera_vq.data / canonical) use the standalone
+    # tessera-zarr-utils package (single source of the cross-UTM-zone 4326 merge);
+    # this drops the old tessera-eval dep (and its geopandas/sklearn pull-in).
+    "tessera-zarr-utils[geotessera] @ git+https://github.com/ucam-eo/tessera-zarr-utils.git@v0.1.0",
 ]
 # Large-scale parameter sweeps + analysis (tessera_vq.sweep, UK isotropy
 # scripts, parquet-with-provenance outputs). Pulls server bits transitively.

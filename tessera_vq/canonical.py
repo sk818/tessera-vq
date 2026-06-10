@@ -19,14 +19,14 @@ from typing import Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
+import tessera_zarr_utils as _zarr_utils
 import yaml
-from tessera_eval import zarr_utils as _zarr_utils
 
 from tessera_vq.data import _read_window_native, _window_bounds, read_region
 
 logger = logging.getLogger(__name__)
 
-# tessera_eval.zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
+# tessera_zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
 # Matches the pattern used in tessera_vq/data.py.
 zarr_utils: Any = _zarr_utils
 
