@@ -91,6 +91,8 @@ def _make_rvq_npz(
 
 def test_reconstruct_shape_and_transform() -> None:
     """A full grid yields the expected mosaic shape, EPSG:4326, and top-left affine."""
+    import math
+
     bbox = (0.0, 50.0, 0.1, 50.05)
     mosaic, transform, crs = _reconstruct(_make_npz(), bbox)
     assert mosaic.shape == (32, 48, 128)
@@ -100,9 +102,18 @@ def test_reconstruct_shape_and_transform() -> None:
     # Top-left pixel corner sits at (lon0, lat1).
     assert abs(transform.c - bbox[0]) < 1e-12
     assert abs(transform.f - bbox[3]) < 1e-12
-    # Pixel size matches bbox span / mosaic shape.
-    assert abs(transform.a - (bbox[2] - bbox[0]) / 48) < 1e-12
-    assert abs(transform.e - -(bbox[3] - bbox[1]) / 32) < 1e-12
+    # Pixel size is Tessera's fixed ~10m ground resolution, NOT bbox span /
+    # mosaic shape -- read_region() rounds fetches out to whole tiles, so the
+    # mosaic generally covers more ground than bbox; dividing the (small)
+    # requested span by the (large) tile-driven pixel count would understate
+    # true ground distance per pixel. See reconstruct_from_structure().
+    pixel_m = 10.0
+    m_per_deg_lat = 111_320.0
+    mean_lat = (bbox[1] + bbox[3]) / 2
+    expected_dy = pixel_m / m_per_deg_lat
+    expected_dx = pixel_m / (m_per_deg_lat * math.cos(math.radians(mean_lat)))
+    assert abs(transform.a - expected_dx) < 1e-12
+    assert abs(transform.e - -expected_dy) < 1e-12
 
 
 def test_reconstruct_fills_only_covered_tiles_with_nan_elsewhere() -> None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -43,6 +44,14 @@ from affine import Affine
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
 
 Distance = Literal["euclidean", "cosine"]
+
+# Tessera's fixed ground resolution. Mirrors tessera_vq.data._PIXEL_M /
+# _M_PER_DEG_LAT -- duplicated here rather than imported so this lightweight
+# client module doesn't pull in data.py's heavier deps (tessera_zarr_utils,
+# geotessera, joblib), which would defeat the point of a minimal plug-in
+# client. See reconstruct_from_structure() for why this is needed.
+_PIXEL_M = 10.0
+_M_PER_DEG_LAT = 111_320.0
 
 
 class NoCoverageError(Exception):
@@ -72,11 +81,14 @@ class QuantizedStructure:
     they don't.
 
     ``mosaic_shape`` is the **full** reprojected EPSG:4326 mosaic shape ``(H, W)`` as
-    returned by ``read_region``, *before* tile-multiple truncation. The reconstructed
-    output is ``((H // tile_size) * tile_size, (W // tile_size) * tile_size, 128)``;
-    pixel size is ``(bbox_span_lon / W, bbox_span_lat / H)`` (i.e. divides by the
-    *full* shape, not the truncated one). Use :func:`reconstruct_from_structure` if you
-    want pixels + transform without re-deriving the math yourself.
+    returned by ``read_region``, *before* tile-multiple truncation -- generally larger
+    than ``bbox`` itself, since ``read_region`` rounds fetches out to whole tiles.
+    The reconstructed output is ``((H // tile_size) * tile_size, (W // tile_size) *
+    tile_size, 128)``. Pixel size is Tessera's fixed ~10m ground resolution (NOT
+    ``bbox_span / W`` -- that undercounts whenever tile-rounding expanded the fetch
+    beyond ``bbox``; see :func:`reconstruct_from_structure`). Use
+    :func:`reconstruct_from_structure` if you want pixels + transform without
+    re-deriving the math yourself.
     """
 
     codebooks1: npt.NDArray[np.float32]
@@ -306,9 +318,14 @@ def reconstruct_from_structure(
 
     Returned shape is ``((full_h // t) * t, (full_w // t) * t, 128)`` where
     ``(full_h, full_w) = struct.mosaic_shape``; uncovered tiles stay NaN. The affine
-    transform places pixel ``(0, 0)`` at the bbox's top-left and uses pixel size
-    ``(bbox_span / full_dim)`` (divides by the *full* mosaic shape, not the truncated
-    output shape — see :class:`QuantizedStructure` for why). CRS is ``"EPSG:4326"``.
+    transform places pixel ``(0, 0)`` at the bbox's top-left and uses Tessera's fixed
+    ~10m ground resolution for pixel size -- NOT ``bbox_span / full_dim``, which used
+    to be the formula here but understates true ground distance per pixel whenever
+    ``read_region`` rounded the fetch out to whole tiles larger than ``bbox`` (which
+    is the common case, not an edge case -- see :class:`QuantizedStructure`). Note
+    this only corrects pixel *scale*; the anchor (top-left = ``bbox``'s corner) is
+    still an approximation of where the *returned* (tile-expanded) data actually
+    starts, not a full fix. CRS is ``"EPSG:4326"``.
 
     Raises :class:`NoCoverageError` if the structure has zero tiles, if the truncated
     output would be 0-sized, or if the reconstructed mosaic is entirely NaN. Callers
@@ -352,9 +369,19 @@ def reconstruct_from_structure(
             f"reconstructed mosaic is entirely NaN for bbox={struct.bbox} "
             f"year={struct.year} t={t} k1={struct.k1} k2={struct.k2}"
         )
-    lon0, _lat0, lon1, lat1 = struct.bbox
-    dx = (lon1 - lon0) / full_w
-    dy = (lat1 - struct.bbox[1]) / full_h
+    lon0, lat0, lon1, lat1 = struct.bbox
+    # Pixel size can't be derived by dividing the *requested* bbox span by the
+    # returned pixel count: the server-side read_region() (see data.py) rounds
+    # fetches out to whole tiles, so the reconstructed mosaic generally covers
+    # more ground than requested -- dividing the small request by the large
+    # pixel count understates true ground distance per pixel (confirmed
+    # empirically: implied ~2.5m/pixel vs the real fixed ~10m/pixel whenever
+    # tile-rounding expanded the fetch). Use the known fixed resolution
+    # instead; it's anchored at the requested bbox's top-left corner as
+    # before (not a full fix for the anchor position, only the scale, but
+    # scale was the reproducible, provable error).
+    dy = _PIXEL_M / _M_PER_DEG_LAT
+    dx = _PIXEL_M / (_M_PER_DEG_LAT * math.cos(math.radians((lat0 + lat1) / 2)))
     return mosaic, Affine(dx, 0.0, lon0, 0.0, -dy, lat1), "EPSG:4326"
 
 
