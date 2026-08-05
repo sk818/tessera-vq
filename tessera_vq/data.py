@@ -10,6 +10,7 @@ geotessera coverage; no embeddings persisted. ``load_downstream`` is deferred
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from functools import lru_cache
 from typing import Any
@@ -31,10 +32,39 @@ _PIXEL_M = 10.0  # Tessera ground resolution
 
 @lru_cache(maxsize=1)
 def get_geotessera() -> Any:
-    """Cached GeoTessera client (geotessera is untyped, hence Any)."""
+    """Cached GeoTessera client (geotessera is untyped, hence Any).
+
+    ``dataset_version`` (geotessera's "v1", "v1.1", etc.) is pinned via the
+    ``TESSERA_DATASET_VERSION`` env var so a bolt-on deployment can be bumped
+    to a newer Tessera release without a code change; defaults to geotessera's
+    own default ("v1").
+    """
     from geotessera import GeoTessera  # noqa: PLC0415  (lazy: heavy optional import)
 
+    dataset_version = os.environ.get("TESSERA_DATASET_VERSION")
+    if dataset_version:
+        return GeoTessera(dataset_version=dataset_version)
     return GeoTessera()
+
+
+def _normalize_dataset_version(spec: str) -> str:
+    """ "v1"/"1"/"1.0" -> "1.0"; "v1.1"/"1.1" -> "1.1"; "v2" -> "2.0"; etc.
+
+    Mirrors geotessera.registry._parse_dataset_version's normalized form
+    (duplicated rather than imported since that helper is private).
+    """
+    s = spec.strip()
+    if s.startswith("v"):
+        s = s[1:]
+    parts = s.split(".")
+    major = parts[0]
+    minor = parts[1] if len(parts) > 1 else "0"
+    return f"{major}.{minor}"
+
+
+def get_dataset_version() -> str:
+    """The resolved Tessera dataset version (e.g. "1.0", "1.1") this process serves."""
+    return _normalize_dataset_version(get_geotessera().dataset_version)
 
 
 @lru_cache(maxsize=4)

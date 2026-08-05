@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import threading
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -42,6 +43,15 @@ def test_no_tiles_message_includes_dims_and_t() -> None:
     assert "t=256" in msg
     assert "603x398" in msg  # message uses (width=cols, height=rows)
     assert "smaller t" in msg or "larger bbox" in msg
+
+
+def test_version_endpoint_returns_dataset_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/version`` reports the resolved Tessera dataset version as JSON."""
+    monkeypatch.setattr(server, "get_dataset_version", lambda: "1.1")
+    client = server.app.test_client()
+    resp = client.get("/version")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"dataset_version": "1.1"}
 
 
 def _patch_read_region(monkeypatch: pytest.MonkeyPatch, window: npt.NDArray[np.float32]) -> None:
@@ -156,7 +166,7 @@ def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_quantized_rvq_cache_serves_second_request(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """With a cache configured, an identical second request is served without recompute."""
     rng = np.random.default_rng(0)

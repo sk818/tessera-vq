@@ -25,6 +25,9 @@ server explicitly says so via HTTP 422, or the decoded NPZ has ``n_tiles == 0``,
 reconstructed mosaic is all-NaN), the client raises :class:`NoCoverageError` so callers
 can surface "no embeddings for this region" cleanly rather than processing zero-shaped
 or all-NaN arrays.
+
+Call ``fetch_dataset_version()`` to find out which Tessera dataset release (e.g. "1.0",
+"1.1") the bolt-on's embeddings come from — useful for stamping exports with provenance.
 """
 
 from __future__ import annotations
@@ -129,6 +132,7 @@ class VQTessera:
         self.m: Distance = m
         self.k2: int | None = int(k2) if k2 is not None else None
         self.timeout = float(timeout)
+        self._dataset_version: str | None = None
 
     @property
     def is_rvq(self) -> bool:
@@ -224,6 +228,27 @@ class VQTessera:
         body = self._post("/residuals", payload)
         result: dict[str, Any] = json.loads(body)
         return result
+
+    def fetch_dataset_version(self) -> str:
+        """The Tessera dataset version (e.g. "1.0", "1.1") the bolt-on server reads from.
+
+        One GET to ``/version`` per client instance; cached after the first call.
+        Servers predating this endpoint (HTTP 404) resolve to ``"unknown"`` rather
+        than raising, since this is metadata, not a hard dependency.
+        """
+        if self._dataset_version is None:
+            try:
+                body = self._get("/version")
+                self._dataset_version = str(json.loads(body)["dataset_version"])
+            except urllib.error.HTTPError:
+                self._dataset_version = "unknown"
+        return self._dataset_version
+
+    def _get(self, path: str) -> bytes:
+        """GET from the bolt-on; return the raw response body."""
+        req = urllib.request.Request(self.server_url + path, method="GET")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
+            return bytes(resp.read())
 
     def _post(self, path: str, payload: dict[str, Any]) -> bytes:
         """POST JSON to the bolt-on; return the raw response body.

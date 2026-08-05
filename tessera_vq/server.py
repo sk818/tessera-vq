@@ -14,6 +14,8 @@ caller, not on the public server.
 Endpoints:
 
 - ``GET  /health``       liveness probe.
+- ``GET  /version``      ``{dataset_version}`` -- the Tessera dataset release this
+                          server's GeoTessera instance reads from (e.g. "1.0", "1.1").
 - ``POST /quantized``    body ``{bbox, t, k, m?, year?, sample_size?, seed?}`` ->
                           NPZ of codebooks + index maps + tile positions.
 
@@ -36,7 +38,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.codebook_codec import quantize_codebook_uint8
-from tessera_vq.data import read_region
+from tessera_vq.data import get_dataset_version, read_region
 from tessera_vq.sweep import (
     Distance,
     quantize_window_for_serving,
@@ -106,6 +108,12 @@ app = Flask("tessera_vq")
 @app.get("/health")  # type: ignore
 def health() -> Response:
     return jsonify({"ok": True})
+
+
+@app.get("/version")  # type: ignore
+def version() -> Response:
+    """The Tessera dataset version (e.g. "1.0", "1.1") this server's GeoTessera reads from."""
+    return jsonify({"dataset_version": get_dataset_version()})
 
 
 @app.post("/quantized")  # type: ignore

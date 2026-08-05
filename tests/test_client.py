@@ -285,6 +285,38 @@ def test_fetch_quantized_structure_rvq_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert struct.k1 == 4 and struct.k2 == 4
 
 
+def test_fetch_dataset_version_returns_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``fetch_dataset_version`` decodes the server's JSON and caches after one GET."""
+    calls = []
+
+    def _ok(req: Any, timeout: float = 0.0) -> _StubResponse:  # noqa: ARG001
+        calls.append(req)
+        return _StubResponse(json.dumps({"dataset_version": "1.1"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", _ok)
+    gt = VQTessera(server_url="http://test")
+    assert gt.fetch_dataset_version() == "1.1"
+    assert gt.fetch_dataset_version() == "1.1"
+    assert len(calls) == 1  # second call served from cache, no second GET
+
+
+def test_fetch_dataset_version_unknown_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server predating /version (404) resolves to "unknown" rather than raising."""
+
+    def _raise_404(_req: Any, timeout: float = 0.0) -> Any:  # noqa: ARG001
+        raise urllib.error.HTTPError(
+            url="http://test/version",
+            code=404,
+            msg="Not Found",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(b""),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _raise_404)
+    gt = VQTessera(server_url="http://test")
+    assert gt.fetch_dataset_version() == "unknown"
+
+
 def test_fetch_mosaic_for_region_raises_on_server_422(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

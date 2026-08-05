@@ -3860,7 +3860,7 @@ wheels = [
 
 [[package]]
 name = "tessera-vq"
-version = "0.5.4"
+version = "0.5.6"
 source = { editable = "." }
 dependencies = [
     { name = "affine" },
