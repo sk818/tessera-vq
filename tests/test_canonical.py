@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from affine import Affine
 
 from tessera_vq import canonical
 from tessera_vq.canonical import (
@@ -94,7 +95,45 @@ def test_read_canonical_window_returns_bbox_on_success(
     """Happy path through the bbox-fallback branch: mosaic returned, path='bbox'."""
     _patch_zarr(monkeypatch, available=False)
     fake = np.zeros((100, 100, 128), dtype=np.float32)
-    monkeypatch.setattr("tessera_vq.canonical.read_region", lambda *_a, **_k: (fake, "bbox"))
+    fake_transform = Affine(0.0001, 0.0, 0.0, 0.0, -0.0001, 0.0)
+    monkeypatch.setattr(
+        "tessera_vq.canonical.read_region", lambda *_a, **_k: (fake, fake_transform, "bbox")
+    )
+    b = CanonicalBbox(name="x", lon=22.05, lat=-1.05, biome="x", continent="AF")
+    mosaic, path = read_canonical_window(b, 2024)
+    assert mosaic is not None
+    assert mosaic.shape == (100, 100, 128)
+    assert path == "bbox"
+
+
+def test_read_canonical_window_unpacks_real_read_region_three_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises canonical.py's call site against the *real* ``data.read_region`` (not a
+    hand-shaped stub of it), so a regression to its old 2-tuple ``(mosaic, path)``
+    return -- or a positional mix-up between ``transform`` and ``path`` in canonical's
+    ``mosaic, _transform, _read_path = read_region(...)`` unpack -- raises a real
+    ``ValueError: too many/not enough values to unpack`` here instead of only being
+    caught by test_data.py's tests of read_region in isolation.
+
+    Only the geotessera client several layers down is stubbed; canonical.py's own
+    ``read_canonical_window`` and ``data.read_region`` both run unmodified.
+    """
+    _patch_zarr(monkeypatch, available=False)
+    fake = np.zeros((100, 100, 128), dtype=np.float32)
+    real_transform = Affine(0.00009, 0.0, -0.014, 0.0, -0.00009, 50.081)
+
+    class _Gt:
+        def fetch_mosaic_for_region(
+            self,
+            bounds: Any,
+            year: Any,
+            target_crs: str,  # noqa: ARG002
+        ) -> tuple[Any, Any, str]:
+            assert target_crs == "EPSG:4326"
+            return fake, real_transform, "bbox"
+
+    monkeypatch.setattr("tessera_vq.data.get_geotessera", _Gt)
     b = CanonicalBbox(name="x", lon=22.05, lat=-1.05, biome="x", continent="AF")
     mosaic, path = read_canonical_window(b, 2024)
     assert mosaic is not None

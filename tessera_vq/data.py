@@ -91,21 +91,33 @@ def read_region(
     *,
     gtz: Any = None,
     gt: Any = None,
-) -> tuple[npt.NDArray[np.float32] | None, str]:
+) -> tuple[npt.NDArray[np.float32] | None, Any, str]:
     """Read ``(H, W, 128)`` float32 EPSG:4326 for ``bounds``; zarr if covered, else bbox.
 
-    Returns ``(mosaic_or_None, path)`` with ``path`` in ``{"zarr", "bbox", "empty"}``.
+    Returns ``(mosaic_or_None, transform_or_None, path)`` with ``path`` in
+    ``{"zarr", "bbox", "empty"}``. ``transform`` is the ``affine.Affine`` mapping
+    pixel ``(row, col)`` -> ``(lon, lat)`` for the *returned* mosaic. Both paths
+    can return more ground than ``bounds`` asked for -- the zarr multi-chunk
+    path via reprojection/chunk-grid edges, the bbox path because geotessera's
+    ``fetch_mosaic_for_region`` returns the union of whichever source tiles
+    overlap ``bounds``, not a ``bounds``-exact crop -- so callers that need an
+    exact crop to ``bounds`` must derive it from this transform. (This used to
+    be discarded here entirely, forcing ``reconstruct_from_structure`` to
+    *fabricate* an anchor -- assuming the mosaic started at ``bounds``'s own
+    corner -- which is wrong whenever the true origin differs, sometimes by
+    several km. Propagating the real transform through the bolt-on wire
+    format is what fixes that; see ``QuantizedStructure.origin``.)
     """
     gtz = zarr_utils.get_zarr() if gtz is None else gtz
     if gtz is not None and zarr_utils.probe_zarr_coverage(gtz, bounds, year):
-        mosaic, _, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
+        mosaic, transform, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
         if mosaic is not None:
-            return np.asarray(mosaic, dtype=np.float32), "zarr"
+            return np.asarray(mosaic, dtype=np.float32), transform, "zarr"
     gt = get_geotessera() if gt is None else gt
-    mosaic, _, _ = gt.fetch_mosaic_for_region(bounds, year=year, target_crs="EPSG:4326")
+    mosaic, transform, _ = gt.fetch_mosaic_for_region(bounds, year=year, target_crs="EPSG:4326")
     if mosaic is None:
-        return None, "empty"
-    return np.asarray(mosaic, dtype=np.float32), "bbox"
+        return None, None, "empty"
+    return np.asarray(mosaic, dtype=np.float32), transform, "bbox"
 
 
 def _finite_pixels(mosaic: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
@@ -131,7 +143,7 @@ def _sample_one_window(
     clat = float(loc[1]) + rng.uniform(-jitter, jitter)
     bounds = (clon - half, clat - half, clon + half, clat + half)
     try:
-        mosaic, path = read_region(bounds, year, gtz=gtz, gt=gt)
+        mosaic, _transform, path = read_region(bounds, year, gtz=gtz, gt=gt)
     except Exception as exc:  # one bad tile must not abort the whole batch
         logger.debug("window read failed at (%.3f, %.3f): %s", clon, clat, exc)
         return None, "error"
@@ -196,7 +208,7 @@ def iter_pool_a_windows(
     gtz, gt = zarr_utils.get_zarr(), get_geotessera()
     for lon, lat in locs:
         bounds = _window_bounds(float(lon), float(lat), window_px)
-        mosaic, _ = read_region(bounds, year, gtz=gtz, gt=gt)
+        mosaic, _transform, _path = read_region(bounds, year, gtz=gtz, gt=gt)
         if mosaic is not None:
             yield mosaic
 

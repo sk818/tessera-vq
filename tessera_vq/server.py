@@ -57,7 +57,7 @@ _KM_PER_DEG_LAT = 111.32
 
 # Durable RVQ response cache (WS-2). Off unless TESSERA_VQ_CACHE_DIR is set, so dev/tests
 # never write a cache; michael enables it via env. Default cap 500 GB (~287k tiles).
-_WIRE_FORMAT = "rvq-int8-gz-1"  # bump if the /quantized_rvq NPZ schema changes
+_WIRE_FORMAT = "rvq-int8-gz-2"  # bump if the /quantized_rvq NPZ schema changes
 _CACHE_DIR = os.environ.get("TESSERA_VQ_CACHE_DIR")
 _CACHE_MAX_GB = float(os.environ.get("TESSERA_VQ_CACHE_MAX_GB", "500"))
 _CACHE: TileCache | None = TileCache(_CACHE_DIR, int(_CACHE_MAX_GB * 1e9)) if _CACHE_DIR else None
@@ -143,7 +143,7 @@ def quantized() -> Response:  # noqa: PLR0911
     seed = int(body.get("seed", 42))
     try:
         with _compute_slot():
-            mosaic, path = read_region(bbox, year)
+            mosaic, transform, path = read_region(bbox, year)
             if mosaic is None:
                 return _bad_request("no embeddings available for bbox", code=404)
             codebooks, indices, positions = quantize_window_for_serving(
@@ -169,6 +169,14 @@ def quantized() -> Response:  # noqa: PLR0911
                 positions=positions,
                 meta=np.asarray([t, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
                 distance=np.asarray(m),
+                # Real anchor for the returned mosaic's pixel (0, 0): (origin_lon,
+                # origin_lat, dx, dy). Without this, reconstruct_from_structure has
+                # to fabricate one from bbox alone, which can be off by several km
+                # (read_region()'s mosaic generally covers more/different ground
+                # than bbox -- see data.py::read_region's docstring).
+                origin=np.asarray(
+                    [transform.c, transform.f, transform.a, transform.e], dtype=np.float64
+                ),
             )
             return Response(buf.getvalue(), mimetype="application/octet-stream")
     except _BusyError:
@@ -209,7 +217,7 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
     def _compute() -> bytes:
         """Read+quantize+pack under a compute slot. Raises _NoData/_NoTiles/_Busy errors."""
         with _compute_slot():
-            mosaic, path = read_region(bbox, year)
+            mosaic, transform, path = read_region(bbox, year)
             if mosaic is None:
                 raise _NoDataError
             cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
@@ -249,6 +257,10 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
                     [t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32
                 ),
                 distance=np.asarray(m),
+                # See /quantized's identical field for why this is here.
+                origin=np.asarray(
+                    [transform.c, transform.f, transform.a, transform.e], dtype=np.float64
+                ),
             )
             return buf.getvalue()
 
@@ -295,7 +307,7 @@ def residuals() -> Response:  # noqa: PLR0911, PLR0912
     seed = int(body.get("seed", 42))
     try:
         with _compute_slot():
-            mosaic, path = read_region(bbox, year)
+            mosaic, _transform, path = read_region(bbox, year)
             if mosaic is None:
                 return _bad_request("no embeddings available for bbox", code=404)
             if k2 is None:

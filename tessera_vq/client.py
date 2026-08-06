@@ -92,6 +92,14 @@ class QuantizedStructure:
     beyond ``bbox``; see :func:`reconstruct_from_structure`). Use
     :func:`reconstruct_from_structure` if you want pixels + transform without
     re-deriving the math yourself.
+
+    ``origin`` is ``(origin_lon, origin_lat, dx, dy)`` for pixel ``(0, 0)`` of the
+    *full* (pre-truncation) mosaic, taken from the real transform ``read_region``
+    computed (via geotessera's ``rasterio.merge``, or the zarr path's reprojection) --
+    not derived from ``bbox``. ``None`` only when talking to a bolt-on server that
+    predates this field (pre-0.5.7), in which case :func:`reconstruct_from_structure`
+    falls back to assuming the mosaic starts at ``bbox``'s own corner, which is a
+    known-inaccurate approximation (see that function's docstring).
     """
 
     codebooks1: npt.NDArray[np.float32]
@@ -106,6 +114,7 @@ class QuantizedStructure:
     mosaic_shape: tuple[int, int]
     bbox: tuple[float, float, float, float]
     year: int
+    origin: tuple[float, float, float, float] | None = None
 
     @property
     def is_rvq(self) -> bool:
@@ -320,6 +329,7 @@ def _structure_from_npz(
             year = int(meta[2])
             full_h, full_w = int(meta[3]), int(meta[4])
             k2 = None
+        origin = tuple(data["origin"].tolist()) if "origin" in data.files else None
     return QuantizedStructure(
         codebooks1=cb1,
         indices1=idx1,
@@ -333,6 +343,7 @@ def _structure_from_npz(
         mosaic_shape=(full_h, full_w),
         bbox=bbox,
         year=year,
+        origin=cast("tuple[float, float, float, float] | None", origin),
     )
 
 
@@ -342,15 +353,23 @@ def reconstruct_from_structure(
     """Rebuild ``(H, W, 128)`` float32 + affine + crs from a :class:`QuantizedStructure`.
 
     Returned shape is ``((full_h // t) * t, (full_w // t) * t, 128)`` where
-    ``(full_h, full_w) = struct.mosaic_shape``; uncovered tiles stay NaN. The affine
-    transform places pixel ``(0, 0)`` at the bbox's top-left and uses Tessera's fixed
-    ~10m ground resolution for pixel size -- NOT ``bbox_span / full_dim``, which used
-    to be the formula here but understates true ground distance per pixel whenever
-    ``read_region`` rounded the fetch out to whole tiles larger than ``bbox`` (which
-    is the common case, not an edge case -- see :class:`QuantizedStructure`). Note
-    this only corrects pixel *scale*; the anchor (top-left = ``bbox``'s corner) is
-    still an approximation of where the *returned* (tile-expanded) data actually
-    starts, not a full fix. CRS is ``"EPSG:4326"``.
+    ``(full_h, full_w) = struct.mosaic_shape``; uncovered tiles stay NaN. CRS is
+    ``"EPSG:4326"``.
+
+    The affine transform's anchor comes from ``struct.origin`` when the bolt-on
+    provided one (servers >=0.5.7): the *real* transform ``read_region`` computed
+    for the returned mosaic, not a guess. Before this existed, the anchor was
+    fabricated by assuming pixel ``(0, 0)`` sits at ``bbox``'s own top-left corner
+    -- which is frequently wrong, sometimes by several km, because geotessera's
+    ``fetch_mosaic_for_region`` returns the union of whichever source tiles
+    overlap ``bbox``, not a ``bbox``-exact crop (confirmed empirically: for one
+    real bbox the true origin differed from the fabricated one by ~3.8km
+    longitude and ~7.8km latitude). That fallback still applies -- with the same
+    caveat -- for structures from an older server that predates ``origin``.
+    Either way, pixel size uses Tessera's fixed ~10m ground resolution, NOT
+    ``bbox_span / full_dim`` (which understates true ground distance per pixel
+    whenever tile-rounding expanded the fetch beyond ``bbox`` -- the common
+    case, not an edge case).
 
     Raises :class:`NoCoverageError` if the structure has zero tiles, if the truncated
     output would be 0-sized, or if the reconstructed mosaic is entirely NaN. Callers
@@ -394,19 +413,23 @@ def reconstruct_from_structure(
             f"reconstructed mosaic is entirely NaN for bbox={struct.bbox} "
             f"year={struct.year} t={t} k1={struct.k1} k2={struct.k2}"
         )
-    lon0, lat0, lon1, lat1 = struct.bbox
-    # Pixel size can't be derived by dividing the *requested* bbox span by the
-    # returned pixel count: the server-side read_region() (see data.py) rounds
-    # fetches out to whole tiles, so the reconstructed mosaic generally covers
-    # more ground than requested -- dividing the small request by the large
-    # pixel count understates true ground distance per pixel (confirmed
-    # empirically: implied ~2.5m/pixel vs the real fixed ~10m/pixel whenever
-    # tile-rounding expanded the fetch). Use the known fixed resolution
-    # instead; it's anchored at the requested bbox's top-left corner as
-    # before (not a full fix for the anchor position, only the scale, but
-    # scale was the reproducible, provable error).
+    if struct.origin is not None:
+        # Real transform propagated from read_region() -- accurate anchor, not a guess.
+        origin_lon, origin_lat, dx, dy = struct.origin
+        return mosaic, Affine(dx, 0.0, origin_lon, 0.0, dy, origin_lat), "EPSG:4326"
+
+    # Fallback for structures from a pre-origin server: fabricate an anchor by
+    # assuming pixel (0, 0) sits at bbox's own top-left corner. Known-inaccurate
+    # (see this function's docstring) but scale is still correct, which was the
+    # reproducible, provable part of the old error -- pixel size can't be derived
+    # by dividing the *requested* bbox span by the returned pixel count, since
+    # read_region() rounds fetches out to whole tiles larger than bbox (the
+    # common case, not an edge case), which understates true ground distance
+    # per pixel if you divide the small request by the large pixel count
+    # (confirmed empirically: implied ~2.5m/pixel vs the real fixed ~10m/pixel).
+    lon0, _lat0, _lon1, lat1 = struct.bbox
     dy = _PIXEL_M / _M_PER_DEG_LAT
-    dx = _PIXEL_M / (_M_PER_DEG_LAT * math.cos(math.radians((lat0 + lat1) / 2)))
+    dx = _PIXEL_M / (_M_PER_DEG_LAT * math.cos(math.radians((struct.bbox[1] + struct.bbox[3]) / 2)))
     return mosaic, Affine(dx, 0.0, lon0, 0.0, -dy, lat1), "EPSG:4326"
 
 

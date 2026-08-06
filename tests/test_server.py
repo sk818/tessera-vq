@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
+from affine import Affine
 
 from tessera_vq import server
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
@@ -54,12 +55,15 @@ def test_version_endpoint_returns_dataset_version(monkeypatch: pytest.MonkeyPatc
     assert resp.get_json() == {"dataset_version": "1.1"}
 
 
+_TEST_TRANSFORM = Affine(0.0001, 0.0, 0.0, 0.0, -0.0001, 50.0)
+
+
 def _patch_read_region(monkeypatch: pytest.MonkeyPatch, window: npt.NDArray[np.float32]) -> None:
     """Replace tessera_vq.server.read_region with a stub returning ``window``."""
     monkeypatch.setattr(
         server,
         "read_region",
-        lambda bbox, year: (window, "test"),
+        lambda bbox, year: (window, _TEST_TRANSFORM, "test"),
     )
 
 
@@ -137,6 +141,65 @@ def test_quantized_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> N
         assert data["codebooks"].shape == (4, 4, 128)
 
 
+def test_quantized_embeds_read_region_transform_as_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/quantized`` ships ``read_region``'s real transform as ``origin``, not a guess.
+
+    ``real_transform`` is anchored well outside the requested bbox
+    (``[0.0, 50.0, 0.001, 50.001]``) so a server that re-derived the anchor from the
+    request instead of propagating ``read_region``'s own transform would be caught.
+    """
+    rng = np.random.default_rng(0)
+    window = rng.standard_normal((64, 64, 128)).astype(np.float32)
+    real_transform = Affine(0.00009, 0.0, -0.014, 0.0, -0.00009, 50.081)
+    monkeypatch.setattr(
+        server,
+        "read_region",
+        lambda bbox, year: (window, real_transform, "test"),  # noqa: ARG005
+    )
+    client = server.app.test_client()
+    resp = client.post(
+        "/quantized",
+        json={"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k": 4},
+    )
+    assert resp.status_code == 200
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert "origin" in data.files
+        origin_lon, origin_lat, dx, dy = data["origin"]
+        assert origin_lon == real_transform.c
+        assert origin_lat == real_transform.f
+        assert dx == real_transform.a
+        assert dy == real_transform.e
+
+
+def test_quantized_rvq_embeds_read_region_transform_as_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/quantized_rvq`` also ships ``read_region``'s real transform as ``origin``."""
+    rng = np.random.default_rng(0)
+    window = rng.standard_normal((64, 64, 128)).astype(np.float32)
+    real_transform = Affine(0.00009, 0.0, -0.014, 0.0, -0.00009, 50.081)
+    monkeypatch.setattr(
+        server,
+        "read_region",
+        lambda bbox, year: (window, real_transform, "test"),  # noqa: ARG005
+    )
+    client = server.app.test_client()
+    resp = client.post(
+        "/quantized_rvq",
+        json={"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k1": 4, "k2": 4},
+    )
+    assert resp.status_code == 200
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert "origin" in data.files
+        origin_lon, origin_lat, dx, dy = data["origin"]
+        assert origin_lon == real_transform.c
+        assert origin_lat == real_transform.f
+        assert dx == real_transform.a
+        assert dy == real_transform.e
+
+
 def test_quantized_rvq_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Positive control for the RVQ endpoint."""
     rng = np.random.default_rng(0)
@@ -173,9 +236,9 @@ def test_quantized_rvq_cache_serves_second_request(
     window = rng.standard_normal((64, 64, 128)).astype(np.float32)
     calls = {"n": 0}
 
-    def counting_read(bbox: object, year: object) -> tuple[npt.NDArray[np.float32], str]:
+    def counting_read(bbox: object, year: object) -> tuple[npt.NDArray[np.float32], Affine, str]:
         calls["n"] += 1
-        return window, "test"
+        return window, _TEST_TRANSFORM, "test"
 
     monkeypatch.setattr(server, "read_region", counting_read)
     monkeypatch.setattr(server, "_CACHE", TileCache(tmp_path, 10**9))

@@ -100,7 +100,7 @@ def read_canonical_window(
             return patch, "zarr"
     bounds = _window_bounds(bbox.lon, bbox.lat, window_px)
     try:
-        mosaic, _read_path = read_region(bounds, year)
+        mosaic, _transform, _read_path = read_region(bounds, year)
     except Exception as exc:  # noqa: BLE001
         # geotessera 0.8 raises ValueError when no tiles exist for the bbox/year
         # rather than returning (None, ...). Treat that the same as "no data".

@@ -28,8 +28,14 @@ def _make_npz(
     full_h: int = 32,
     full_w: int = 48,
     positions: list[tuple[int, int]] | None = None,
+    origin: tuple[float, float, float, float] | None = None,
 ) -> bytes:
-    """Build an NPZ matching the bolt-on's /quantized payload shape."""
+    """Build an NPZ matching the bolt-on's /quantized payload shape.
+
+    ``origin`` is omitted by default (matching a pre-0.5.7 server) so existing
+    tests keep exercising the fallback anchor in reconstruct_from_structure;
+    pass it to test the accurate-origin path instead.
+    """
     if positions is None:
         positions = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
     n = len(positions)
@@ -38,15 +44,17 @@ def _make_npz(
     indices = rng.integers(0, k, size=(n, t, t), dtype=np.uint8)
     pos_arr = np.asarray(positions, dtype=np.int32) if n else np.zeros((0, 2), dtype=np.int32)
     meta = np.array([t, k, 2024, full_h, full_w], dtype=np.int32)
+    arrays: dict[str, Any] = {
+        "codebooks": codebooks,
+        "indices": indices,
+        "positions": pos_arr,
+        "meta": meta,
+        "distance": np.asarray("euclidean"),
+    }
+    if origin is not None:
+        arrays["origin"] = np.asarray(origin, dtype=np.float64)
     buf = io.BytesIO()
-    np.savez(
-        buf,
-        codebooks=codebooks,
-        indices=indices,
-        positions=pos_arr,
-        meta=meta,
-        distance=np.asarray("euclidean"),
-    )
+    np.savez(buf, **arrays)
     return buf.getvalue()
 
 
@@ -114,6 +122,57 @@ def test_reconstruct_shape_and_transform() -> None:
     expected_dx = pixel_m / (m_per_deg_lat * math.cos(math.radians(mean_lat)))
     assert abs(transform.a - expected_dx) < 1e-12
     assert abs(transform.e - -expected_dy) < 1e-12
+
+
+def test_structure_from_npz_parses_origin_when_present() -> None:
+    """``_structure_from_npz`` round-trips ``origin`` onto ``QuantizedStructure`` when a
+    (>=0.5.7) server ships it, and leaves it ``None`` when an older server omits it."""
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    origin = (-0.014, 50.081, 0.00009, -0.00009)
+    struct = _structure_from_npz(_make_npz(origin=origin), bbox)
+    assert struct.origin == pytest.approx(origin)
+
+    struct_no_origin = _structure_from_npz(_make_npz(), bbox)
+    assert struct_no_origin.origin is None
+
+
+def test_reconstruct_uses_real_origin_when_present_not_bbox_derived_anchor() -> None:
+    """When the NPZ carries ``origin``, reconstruction anchors there -- not at bbox's
+    corner.
+
+    ``origin`` here is deliberately far from ``bbox``'s own top-left corner
+    ``(0.0, 50.05)``, matching the real-world case this field exists for: geotessera's
+    tile-rounded mosaic frequently starts somewhere other than the requested bbox
+    corner (confirmed empirically off by ~3.8km lon / ~7.8km lat for one real bbox;
+    see ``QuantizedStructure.origin``'s docstring). A reconstruction that silently
+    fell back to the bbox-derived approximation despite ``origin`` being present
+    would be caught here, since the assertions below would fail against the
+    bbox corner instead.
+    """
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    origin_lon, origin_lat, dx, dy = -0.014, 50.081, 0.00009, -0.00009
+    npz = _make_npz(origin=(origin_lon, origin_lat, dx, dy))
+    struct = _structure_from_npz(npz, bbox)
+    _mosaic, transform, crs = reconstruct_from_structure(struct)
+    assert crs == "EPSG:4326"
+    assert transform.c == origin_lon
+    assert transform.f == origin_lat
+    assert transform.a == dx
+    assert transform.e == dy
+    # Sanity: origin is genuinely not bbox's corner, so a passing anchor assertion
+    # above isn't a coincidence of the two being equal.
+    assert origin_lon != bbox[0] or origin_lat != bbox[3]
+
+
+def test_reconstruct_falls_back_to_bbox_anchor_when_origin_absent() -> None:
+    """Pre-0.5.7 servers omit ``origin`` -> reconstruction falls back to the documented
+    (known-approximate) bbox-corner anchor, same as before this field existed."""
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    struct = _structure_from_npz(_make_npz(), bbox)  # no origin kwarg -> None
+    assert struct.origin is None
+    _mosaic, transform, _crs = reconstruct_from_structure(struct)
+    assert abs(transform.c - bbox[0]) < 1e-12
+    assert abs(transform.f - bbox[3]) < 1e-12
 
 
 def test_reconstruct_fills_only_covered_tiles_with_nan_elsewhere() -> None:
