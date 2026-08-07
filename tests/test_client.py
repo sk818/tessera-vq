@@ -185,12 +185,45 @@ def test_reconstruct_fills_only_covered_tiles_with_nan_elsewhere() -> None:
     assert np.isnan(mosaic[16:, :]).all()
 
 
-def test_reconstruct_truncates_to_tile_multiple() -> None:
-    """If meta dims aren't multiples of t, output is truncated to the largest fit."""
+def test_reconstruct_does_not_truncate_to_tile_multiple() -> None:
+    """Output is exactly (full_h, full_w) -- not floored to a tile_size multiple.
+
+    Regression: a previous version truncated to ``(full_h // t) * t`` and
+    silently discarded up to ``t - 1`` real pixels per axis as a result (see
+    tile_pixel_offset's docstring) -- often close to half a small target crop
+    when the mosaic wasn't much bigger than the requested tile size.
+    """
     bbox = (0.0, 50.0, 0.1, 50.05)
     npz = _make_npz(t=16, full_h=33, full_w=49, positions=[(0, 0)])
     mosaic, _, _ = _reconstruct(npz, bbox)
-    assert mosaic.shape == (32, 48, 128)  # 33//16 = 2, 49//16 = 3 -> 32, 48
+    assert mosaic.shape == (33, 49, 128)
+
+
+def test_reconstruct_last_tile_is_pulled_back_not_dropped() -> None:
+    """The last row/col of tiles, when full_h/full_w isn't a t multiple, sits at
+    (full_dim - t) -- covering real ground up to the true edge -- rather than
+    being silently absent (which is what a floor-based server/client would do,
+    and what an older client talking to a new server, or vice versa, degrades
+    to -- see tile_pixel_offset's docstring for why that's still safe)."""
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    t, full_h, full_w = 16, 33, 49
+    # n_tile_rows = ceil(33/16) = 3, last row index = 2 -> offset 33-16=17.
+    # n_tile_cols = ceil(49/16) = 4, last col index = 3 -> offset 49-16=33.
+    npz = _make_npz(t=t, full_h=full_h, full_w=full_w, positions=[(2, 3)])
+    mosaic, _, _ = _reconstruct(npz, bbox)
+    assert np.isfinite(mosaic[17:33, 33:49]).all()  # last tile's true footprint
+    assert np.isnan(mosaic[0:17, :]).all()  # nothing else was covered
+    assert np.isnan(mosaic[:, 0:33]).all()
+
+
+def test_reconstruct_last_tile_offset_matches_regular_stride_when_evenly_divisible() -> None:
+    """No remainder -> the 'last tile' rule reduces to plain idx * t (no overlap
+    introduced where none is needed)."""
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    t, full_h, full_w = 16, 32, 48  # exact multiples of t: no remainder on either axis
+    npz = _make_npz(t=t, full_h=full_h, full_w=full_w, positions=[(1, 2)])  # last row & col
+    mosaic, _, _ = _reconstruct(npz, bbox)
+    assert np.isfinite(mosaic[16:32, 32:48]).all()  # idx*t == full_dim-t here: 1*16=16, 2*16=32
 
 
 def test_client_rejects_non_4326_target_crs() -> None:

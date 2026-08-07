@@ -22,6 +22,39 @@ Distance = Literal["euclidean", "cosine"]
 _DEFAULT_KMEANS_ITERS = 20  # Lloyd iterations on the fit subsample.
 
 
+def n_tiles_along(full_dim: int, t: int) -> int:
+    """How many ``t``-tiles cover ``full_dim`` under :func:`tile_pixel_offset`'s
+    scheme: ``ceil(full_dim / t)``, i.e. one more than a plain floor-tiling
+    whenever ``full_dim`` isn't an exact multiple of ``t``. 0 if ``full_dim < t``
+    (not even one tile fits)."""
+    if full_dim < t:
+        return 0
+    return -(-full_dim // t)  # ceil division without importing math
+
+
+def tile_pixel_offset(idx: int, n: int, full_dim: int, t: int) -> int:
+    """Pixel offset of tile ``idx`` (0-based) along one axis, ``n = n_tiles_along(...)``.
+
+    Fixed ``t``-stride (``idx * t``) for every tile except the last, which is
+    pulled back to end exactly at ``full_dim`` (``full_dim - t``) instead of
+    being dropped when ``full_dim`` isn't an exact multiple of ``t``. The two
+    formulas agree whenever ``full_dim % t == 0``, so this is a strict
+    generalisation of plain non-overlapping tiling, not a special case of it.
+
+    This one function is the single source of truth for where a tile sits,
+    shared by the server's tiling loop (this module) and the client's
+    reconstruction (``tessera_vq.client``, which duplicates this exact formula
+    since the client is deliberately kept free of this [server]-extra module's
+    heavier deps -- see that module's docstring). A client that doesn't know
+    about the last tile's pull-back (an old client talking to a new server, or
+    vice versa) just doesn't request/place it -- see ``reconstruct_from_structure``'s
+    docstring for why that degrades safely instead of corrupting anything.
+    """
+    if idx == n - 1:
+        return full_dim - t
+    return idx * t
+
+
 def fast_quantize_tile(
     tile: npt.NDArray[np.float32],
     k: int,
@@ -84,15 +117,17 @@ def quantize_window_for_serving(
     *,
     sample_size: int = 2000,
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint16], npt.NDArray[np.int32]]:
-    """Tile ``window`` into non-overlapping t x t blocks; quantise each all-finite block.
+    """Tile ``window`` into t x t blocks (see :func:`tile_pixel_offset` for the
+    last row/column's placement); quantise each all-finite block.
 
     Returns ``(codebooks, indices, positions)`` where:
       ``codebooks``  ``(n_tiles, k_eff, 128)`` float32  (``k_eff = min(k, t * t)``)
       ``indices``    ``(n_tiles, t, t)``  uint8 if ``k_eff <= 256`` else uint16
-      ``positions``  ``(n_tiles, 2)`` int32 ``(row, col)`` in the bbox tile-grid.
+      ``positions``  ``(n_tiles, 2)`` int32 ``(row, col)`` tile-grid indices --
+        NOT pixel offsets; see :func:`tile_pixel_offset` to convert.
     """
     h, w, c = window.shape
-    rows, cols = h // t, w // t
+    rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     k_eff = min(k, t * t)
     # Any: older mypys won't narrow the conditional dtype expression; runtime is correct.
     idx_dtype: Any = np.uint8 if k_eff <= 256 else np.uint16  # noqa: PLR2004
@@ -100,8 +135,10 @@ def quantize_window_for_serving(
     idxs: list[npt.NDArray[Any]] = []
     pos: list[tuple[int, int]] = []
     for r in range(rows):
+        row_off = tile_pixel_offset(r, rows, h, t)
         for col in range(cols):
-            tile = window[r * t : (r + 1) * t, col * t : (col + 1) * t]
+            col_off = tile_pixel_offset(col, cols, w, t)
+            tile = window[row_off : row_off + t, col_off : col_off + t]
             if not np.isfinite(tile).all():
                 continue
             cb, idx = fast_quantize_tile(tile, k, m, seed, sample_size=sample_size)
@@ -193,11 +230,14 @@ def rvq_per_tile_errors(
     if n == 0:
         empty = np.zeros(0, np.float32)
         return empty, empty
+    h, w, _dim = window.shape
+    rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     l2 = np.empty(n, np.float32)
     cos = np.empty(n, np.float32)
     for i in range(n):
         r, c = int(positions[i, 0]), int(positions[i, 1])
-        orig = window[r * t : (r + 1) * t, c * t : (c + 1) * t]
+        row_off, col_off = tile_pixel_offset(r, rows, h, t), tile_pixel_offset(c, cols, w, t)
+        orig = window[row_off : row_off + t, col_off : col_off + t]
         recon = codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]
         l2[i] = float(np.linalg.norm(orig - recon, axis=-1).mean())
         on = np.linalg.norm(orig, axis=-1)
@@ -224,15 +264,17 @@ def rvq_quantize_window_for_serving(
     npt.NDArray[Any],
     npt.NDArray[np.int32],
 ]:
-    """Tile ``window`` into t x t blocks; run RVQ on each all-finite block.
+    """Tile ``window`` into t x t blocks (see :func:`tile_pixel_offset` for the
+    last row/column's placement); run RVQ on each all-finite block.
 
     Returns ``(codebooks1, indices1, codebooks2, indices2, positions)`` where:
       ``codebooks{1,2}``  ``(n_tiles, k{1,2}_eff, 128)`` float32
       ``indices{1,2}``    ``(n_tiles, t, t)`` uint8 if ``k_eff <= 256`` else uint16
-      ``positions``       ``(n_tiles, 2)`` int32 ``(row, col)`` in the bbox tile-grid.
+      ``positions``       ``(n_tiles, 2)`` int32 ``(row, col)`` tile-grid indices --
+        NOT pixel offsets; see :func:`tile_pixel_offset` to convert.
     """
     h, w, c = window.shape
-    rows, cols = h // t, w // t
+    rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     k1_eff = min(k1, t * t)
     k2_eff = min(k2, t * t)
     idx_dtype1: Any = np.uint8 if k1_eff <= 256 else np.uint16  # noqa: PLR2004
@@ -243,8 +285,10 @@ def rvq_quantize_window_for_serving(
     idxs2: list[npt.NDArray[Any]] = []
     pos: list[tuple[int, int]] = []
     for r in range(rows):
+        row_off = tile_pixel_offset(r, rows, h, t)
         for col in range(cols):
-            tile = window[r * t : (r + 1) * t, col * t : (col + 1) * t]
+            col_off = tile_pixel_offset(col, cols, w, t)
+            tile = window[row_off : row_off + t, col_off : col_off + t]
             if not np.isfinite(tile).all():
                 continue
             cb1, idx1, cb2, idx2 = rvq_quantize_tile(

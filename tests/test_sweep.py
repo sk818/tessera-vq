@@ -5,6 +5,7 @@ import numpy as np
 from tessera_vq.phase3_sweep import rvq_errors
 from tessera_vq.sweep import (
     fast_quantize_tile,
+    n_tiles_along,
     quantize_window_for_serving,
     quantize_window_residual_norms,
     quantize_window_residual_norms_rvq,
@@ -14,6 +15,7 @@ from tessera_vq.sweep import (
     rvq_quantize_window_for_serving,
     rvq_reconstruct_tile,
     sweep_window,
+    tile_pixel_offset,
 )
 
 
@@ -159,3 +161,66 @@ def test_quantize_window_for_serving_skips_nan_tiles() -> None:
     assert cbs.shape[0] == 3
     assert idxs.shape[0] == 3
     assert (0, 0) not in {tuple(p) for p in pos}
+
+
+# --- n_tiles_along / tile_pixel_offset: the tiling fix itself. The bug this
+# closes: a window not an exact multiple of t used to silently drop the
+# remainder strip (up to t-1 real, valid pixels) instead of covering it with
+# a tile pulled back to end exactly at the window's true edge. ---
+
+
+def test_n_tiles_along_exact_multiple() -> None:
+    """No remainder -> plain floor division (== ceil here)."""
+    assert n_tiles_along(64, 32) == 2
+    assert n_tiles_along(96, 32) == 3
+
+
+def test_n_tiles_along_with_remainder_rounds_up() -> None:
+    """A remainder still gets one more tile -- not silently dropped."""
+    assert n_tiles_along(65, 32) == 3  # floor would give 2, dropping the last pixel
+    assert n_tiles_along(978, 256) == 4  # the real bbox from the postcard bug report
+
+
+def test_n_tiles_along_smaller_than_t_is_zero() -> None:
+    """Not even one tile fits -> 0, matching the existing 'no coverage' path."""
+    assert n_tiles_along(10, 32) == 0
+
+
+def test_tile_pixel_offset_regular_tiles_are_plain_stride() -> None:
+    """Every tile except the last is untouched: idx * t, same as before this fix."""
+    n = n_tiles_along(978, 256)
+    assert tile_pixel_offset(0, n, 978, 256) == 0
+    assert tile_pixel_offset(1, n, 978, 256) == 256
+    assert tile_pixel_offset(2, n, 978, 256) == 512
+
+
+def test_tile_pixel_offset_last_tile_ends_exactly_at_full_dim() -> None:
+    """The last tile is pulled back to (full_dim - t), not dropped or left
+    hanging past the edge -- covers real ground the old floor-based tiling
+    silently discarded (this exact case: 978px at t=256 used to keep only
+    768px, dropping a 210px/~2.5km strip -- the root cause of the postcard
+    misalignment bug this fix closes)."""
+    n = n_tiles_along(978, 256)
+    last_offset = tile_pixel_offset(n - 1, n, 978, 256)
+    assert last_offset == 978 - 256
+    assert last_offset + 256 == 978  # tile's footprint reaches the true edge exactly
+
+
+def test_tile_pixel_offset_reduces_to_plain_stride_when_no_remainder() -> None:
+    """Exact multiple of t -> the 'last tile' rule agrees with idx * t (no
+    special-casing needed; this is a strict generalisation, not a branch)."""
+    n = n_tiles_along(1024, 256)
+    assert n == 4
+    assert tile_pixel_offset(3, n, 1024, 256) == 3 * 256 == 1024 - 256
+
+
+def test_quantize_window_for_serving_covers_the_remainder_tile() -> None:
+    """A window with a genuine remainder now yields a tile covering it, at the
+    pulled-back offset -- not silently dropped the way floor-based tiling did."""
+    window = _three_cluster_tile(65, 32, 128, seed=20)  # 65 rows: one row of remainder at t=32
+    cbs, idxs, pos = quantize_window_for_serving(window, t=32, k=4, m="euclidean", seed=42)
+    assert pos.shape[0] == 3  # 2 regular row-tiles + 1 pulled-back remainder tile, 1 col
+    assert {tuple(p) for p in pos} == {(0, 0), (1, 0), (2, 0)}
+    # The remainder (last) row-tile is index 2 of 3; its true pixel offset is 65-32=33.
+    n_rows = n_tiles_along(65, 32)
+    assert tile_pixel_offset(2, n_rows, 65, 32) == 33

@@ -110,10 +110,18 @@ def test_quantized_rvq_returns_422_when_all_candidate_tiles_have_nan(
     Regression for the original bug report: Cambridge-shape reprojected window where
     the source's UTM-to-EPSG:4326 reprojection introduced NaN strips that cut every
     candidate tile. Old behaviour: silent ``n_tiles=0`` NPZ. New behaviour: 422.
+
+    The NaN band here (columns 200-400) is wider than the original bug report's --
+    with t=256 tiling now covering the last row/column via a pulled-back tile
+    (tile_pixel_offset; see tessera_vq.sweep), the candidate columns are
+    [0,256), [256,512) AND [347,603), and a strip has to reach from inside the
+    first into inside the third to defeat all three (a narrower strip no longer
+    can -- see test_quantized_rvq_succeeds_when_edge_tile_dodges_a_narrow_nan_strip
+    directly below, which is now a *positive* control instead).
     """
     rng = np.random.default_rng(0)
     window = rng.standard_normal((398, 603, 128)).astype(np.float32)
-    window[:, 250:260] = np.nan  # vertical NaN strip cutting both candidate tiles at t=256
+    window[:, 200:400] = np.nan  # wide enough to cut all three candidate columns at t=256
     _patch_read_region(monkeypatch, window)
     client = server.app.test_client()
     resp = client.post(
@@ -123,6 +131,33 @@ def test_quantized_rvq_returns_422_when_all_candidate_tiles_have_nan(
     assert resp.status_code == 422
     body = resp.get_json()
     assert "t=256" in body["error"]
+
+
+def test_quantized_rvq_succeeds_when_edge_tile_dodges_a_narrow_nan_strip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A narrow NaN strip that used to cut every t=256 candidate column now leaves
+    one standing: the last column's tile is pulled back to end at the window's
+    true right edge (tile_pixel_offset), landing at columns [347, 603) for this
+    603px-wide window -- outside the [250, 260) strip that hits the two
+    fixed-stride columns [0, 256) and [256, 512). Positive-side-effect regression
+    for the tiling fix: real, valid ground that used to be either dropped
+    (postcard/viewport truncation) or -- as here -- the difference between a
+    hard 422 and a served (if partial) result, depending on exactly where a
+    NaN strip happened to fall relative to the old fixed tile grid.
+    """
+    rng = np.random.default_rng(0)
+    window = rng.standard_normal((398, 603, 128)).astype(np.float32)
+    window[:, 250:260] = np.nan
+    _patch_read_region(monkeypatch, window)
+    client = server.app.test_client()
+    resp = client.post(
+        "/quantized_rvq",
+        json={"bbox": [0.1025, 52.1751, 0.1758, 52.22], "t": 256, "k1": 256, "k2": 256},
+    )
+    assert resp.status_code == 200
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert data["positions"].shape[0] > 0
 
 
 def test_quantized_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> None:

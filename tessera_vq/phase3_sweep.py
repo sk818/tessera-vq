@@ -25,7 +25,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from tessera_vq.sweep import rvq_quantize_window_for_serving
+from tessera_vq.sweep import n_tiles_along, rvq_quantize_window_for_serving, tile_pixel_offset
 
 N_BINS = 50
 WARMUP_P_HI = 99.0
@@ -48,10 +48,13 @@ def rvq_errors(
     )
     if positions.shape[0] == 0:
         return np.zeros(0, np.float32)
+    h, w, _dim = window.shape
+    rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     l2_chunks: list[npt.NDArray[np.float32]] = []
     for i in range(int(positions.shape[0])):
         r, c = int(positions[i, 0]), int(positions[i, 1])
-        orig = window[r * t : (r + 1) * t, c * t : (c + 1) * t]
+        row_off, col_off = tile_pixel_offset(r, rows, h, t), tile_pixel_offset(c, cols, w, t)
+        orig = window[row_off : row_off + t, col_off : col_off + t]
         recon = cb1[i][idx1[i]] + cb2[i][idx2[i]]
         l2 = np.linalg.norm(orig - recon, axis=-1)
         l2_chunks.append(l2.ravel().astype(np.float32))

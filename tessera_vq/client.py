@@ -57,6 +57,25 @@ _PIXEL_M = 10.0
 _M_PER_DEG_LAT = 111_320.0
 
 
+def _n_tiles_along(full_dim: int, t: int) -> int:
+    """Mirrors ``tessera_vq.sweep.n_tiles_along`` exactly -- duplicated (not
+    imported) for the same reason ``_PIXEL_M`` above is: ``sweep`` sits behind
+    the ``[server]``/``[sweep]`` extras this client deliberately doesn't pull
+    in. Must stay in sync with that copy -- see ``tile_pixel_offset``'s
+    docstring there for why the two sides agreeing matters."""
+    if full_dim < t:
+        return 0
+    return -(-full_dim // t)
+
+
+def _tile_pixel_offset(idx: int, n: int, full_dim: int, t: int) -> int:
+    """Mirrors ``tessera_vq.sweep.tile_pixel_offset`` exactly -- see
+    ``_n_tiles_along`` above for why this is duplicated rather than imported."""
+    if idx == n - 1:
+        return full_dim - t
+    return idx * t
+
+
 class NoCoverageError(Exception):
     """Raised when the bolt-on has no quantized tiles for the requested region/params.
 
@@ -76,18 +95,22 @@ class QuantizedStructure:
     single-stage case and ``codebooks1[i][indices1[i]] + codebooks2[i][indices2[i]]``
     for the RVQ case.
 
-    ``positions`` are ``(row, col)`` indices into the bbox tile-grid (NOT UTM or world
-    coordinates): pixel ``(0, 0)`` of tile ``i`` sits at ``(positions[i, 0] * tile_size,
-    positions[i, 1] * tile_size)`` inside the EPSG:4326 mosaic. The reprojected mosaic
-    itself is not returned — callers reconstruct it via :func:`reconstruct_from_structure`
-    if they need pixels, or pass the structure straight through to a storage format if
-    they don't.
+    ``positions`` are ``(row, col)`` *tile-grid indices* (NOT UTM/world coordinates,
+    NOT pixel offsets themselves): convert to pixel ``(0, 0)`` of tile ``i`` via
+    ``tessera_vq.sweep.tile_pixel_offset(positions[i, k], n_tiles_along(H_or_W,
+    tile_size), H_or_W, tile_size)`` -- fixed ``tile_size``-stride, except the last
+    tile along an axis is pulled back to end exactly at that axis's true edge rather
+    than a remainder strip being dropped when ``H``/``W`` isn't itself a multiple of
+    ``tile_size``. The reprojected mosaic itself is not returned — callers
+    reconstruct it via :func:`reconstruct_from_structure` if they need pixels
+    (which already applies this offset rule), or pass the structure straight
+    through to a storage format if they don't.
 
     ``mosaic_shape`` is the **full** reprojected EPSG:4326 mosaic shape ``(H, W)`` as
-    returned by ``read_region``, *before* tile-multiple truncation -- generally larger
-    than ``bbox`` itself, since ``read_region`` rounds fetches out to whole tiles.
-    The reconstructed output is ``((H // tile_size) * tile_size, (W // tile_size) *
-    tile_size, 128)``. Pixel size is Tessera's fixed ~10m ground resolution (NOT
+    returned by ``read_region`` -- generally larger than ``bbox`` itself, since
+    ``read_region`` rounds fetches out to whole tiles. The reconstructed output is
+    exactly ``(H, W, 128)`` -- every real pixel, not truncated to a tile_size
+    multiple. Pixel size is Tessera's fixed ~10m ground resolution (NOT
     ``bbox_span / W`` -- that undercounts whenever tile-rounding expanded the fetch
     beyond ``bbox``; see :func:`reconstruct_from_structure`). Use
     :func:`reconstruct_from_structure` if you want pixels + transform without
@@ -352,9 +375,19 @@ def reconstruct_from_structure(
 ) -> tuple[npt.NDArray[np.float32], Affine, str]:
     """Rebuild ``(H, W, 128)`` float32 + affine + crs from a :class:`QuantizedStructure`.
 
-    Returned shape is ``((full_h // t) * t, (full_w // t) * t, 128)`` where
-    ``(full_h, full_w) = struct.mosaic_shape``; uncovered tiles stay NaN. CRS is
-    ``"EPSG:4326"``.
+    Returned shape is ``struct.mosaic_shape`` (``full_h, full_w``) exactly --
+    every real pixel the bolt-on fetched, not ``(full_h // t) * t`` truncated
+    down to a whole multiple of the tile size. Tiles are placed via
+    :func:`_tile_pixel_offset`: fixed ``t``-stride, except the last tile along
+    each axis (if ``full_h``/``full_w`` isn't itself a multiple of ``t``) is
+    pulled back to end exactly at the true edge instead of that remainder
+    strip being silently dropped -- servers before this scheme (see
+    ``tessera_vq.sweep`` for the server-side half) discarded up to ``t - 1``
+    real, valid pixels per axis this way, which mattered a lot for callers
+    requesting a small crop out of a much-larger-than-t mosaic (a whole tile
+    can be a large fraction of a small target). Uncovered pixels (either
+    genuinely outside the bolt-on's fetch, or -- talking to an older server --
+    the pre-this-fix remainder strip) stay NaN. CRS is ``"EPSG:4326"``.
 
     The affine transform's anchor comes from ``struct.origin`` when the bolt-on
     provided one (servers >=0.5.7): the *real* transform ``read_region`` computed
@@ -371,10 +404,10 @@ def reconstruct_from_structure(
     whenever tile-rounding expanded the fetch beyond ``bbox`` -- the common
     case, not an edge case).
 
-    Raises :class:`NoCoverageError` if the structure has zero tiles, if the truncated
-    output would be 0-sized, or if the reconstructed mosaic is entirely NaN. Callers
-    should prefer this helper over re-implementing the math so they stay aligned with
-    ``fetch_mosaic_for_region``.
+    Raises :class:`NoCoverageError` if the structure has zero tiles, if not even one
+    tile fits (``full_h`` or ``full_w`` < ``t``), or if the reconstructed mosaic is
+    entirely NaN. Callers should prefer this helper over re-implementing the math so
+    they stay aligned with ``fetch_mosaic_for_region``.
     """
     n = int(struct.positions.shape[0])
     if n == 0:
@@ -384,28 +417,30 @@ def reconstruct_from_structure(
         )
     full_h, full_w = struct.mosaic_shape
     t = struct.tile_size
-    out_h = (full_h // t) * t
-    out_w = (full_w // t) * t
-    if out_h == 0 or out_w == 0:
+    rows, cols = _n_tiles_along(full_h, t), _n_tiles_along(full_w, t)
+    if rows == 0 or cols == 0:
         raise NoCoverageError(
-            f"reconstructed mosaic would be 0-sized ({out_h}x{out_w}) for "
-            f"bbox={struct.bbox} year={struct.year} t={t}; tile_size exceeds "
-            f"reprojected region ({full_w}x{full_h} px)"
+            f"not even one {t}x{t} tile fits for bbox={struct.bbox} year={struct.year} "
+            f"t={t}; tile_size exceeds reprojected region ({full_w}x{full_h} px)"
         )
     channels = int(struct.codebooks1.shape[-1])
-    mosaic = np.full((out_h, out_w, channels), np.nan, dtype=np.float32)
+    mosaic = np.full((full_h, full_w, channels), np.nan, dtype=np.float32)
     if struct.is_rvq:
         cb2 = cast("npt.NDArray[np.float32]", struct.codebooks2)
         idx2 = cast("npt.NDArray[Any]", struct.indices2)
         for i in range(n):
             r, c = int(struct.positions[i, 0]), int(struct.positions[i, 1])
-            mosaic[r * t : (r + 1) * t, c * t : (c + 1) * t] = (
+            row_off = _tile_pixel_offset(r, rows, full_h, t)
+            col_off = _tile_pixel_offset(c, cols, full_w, t)
+            mosaic[row_off : row_off + t, col_off : col_off + t] = (
                 struct.codebooks1[i][struct.indices1[i]] + cb2[i][idx2[i]]
             )
     else:
         for i in range(n):
             r, c = int(struct.positions[i, 0]), int(struct.positions[i, 1])
-            mosaic[r * t : (r + 1) * t, c * t : (c + 1) * t] = struct.codebooks1[i][
+            row_off = _tile_pixel_offset(r, rows, full_h, t)
+            col_off = _tile_pixel_offset(c, cols, full_w, t)
+            mosaic[row_off : row_off + t, col_off : col_off + t] = struct.codebooks1[i][
                 struct.indices1[i]
             ]
     if bool(np.isnan(mosaic).all()):
