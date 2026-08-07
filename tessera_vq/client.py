@@ -57,20 +57,25 @@ _PIXEL_M = 10.0
 _M_PER_DEG_LAT = 111_320.0
 
 
-def _n_tiles_along(full_dim: int, t: int) -> int:
+def n_tiles_along(full_dim: int, t: int) -> int:
     """Mirrors ``tessera_vq.sweep.n_tiles_along`` exactly -- duplicated (not
     imported) for the same reason ``_PIXEL_M`` above is: ``sweep`` sits behind
     the ``[server]``/``[sweep]`` extras this client deliberately doesn't pull
     in. Must stay in sync with that copy -- see ``tile_pixel_offset``'s
-    docstring there for why the two sides agreeing matters."""
+    docstring there for why the two sides agreeing matters. Public (not a
+    leading-underscore private helper): downstream code that reconstructs
+    tiles itself instead of going through :func:`reconstruct_from_structure`
+    (e.g. a lighter-weight partial reconstruction) should import this pair
+    rather than re-deriving the same formula a third time."""
     if full_dim < t:
         return 0
     return -(-full_dim // t)
 
 
-def _tile_pixel_offset(idx: int, n: int, full_dim: int, t: int) -> int:
+def tile_pixel_offset(idx: int, n: int, full_dim: int, t: int) -> int:
     """Mirrors ``tessera_vq.sweep.tile_pixel_offset`` exactly -- see
-    ``_n_tiles_along`` above for why this is duplicated rather than imported."""
+    ``n_tiles_along`` above for why this is duplicated rather than imported,
+    and for why it's public."""
     if idx == n - 1:
         return full_dim - t
     return idx * t
@@ -378,7 +383,7 @@ def reconstruct_from_structure(
     Returned shape is ``struct.mosaic_shape`` (``full_h, full_w``) exactly --
     every real pixel the bolt-on fetched, not ``(full_h // t) * t`` truncated
     down to a whole multiple of the tile size. Tiles are placed via
-    :func:`_tile_pixel_offset`: fixed ``t``-stride, except the last tile along
+    :func:`tile_pixel_offset`: fixed ``t``-stride, except the last tile along
     each axis (if ``full_h``/``full_w`` isn't itself a multiple of ``t``) is
     pulled back to end exactly at the true edge instead of that remainder
     strip being silently dropped -- servers before this scheme (see
@@ -417,7 +422,7 @@ def reconstruct_from_structure(
         )
     full_h, full_w = struct.mosaic_shape
     t = struct.tile_size
-    rows, cols = _n_tiles_along(full_h, t), _n_tiles_along(full_w, t)
+    rows, cols = n_tiles_along(full_h, t), n_tiles_along(full_w, t)
     if rows == 0 or cols == 0:
         raise NoCoverageError(
             f"not even one {t}x{t} tile fits for bbox={struct.bbox} year={struct.year} "
@@ -430,16 +435,16 @@ def reconstruct_from_structure(
         idx2 = cast("npt.NDArray[Any]", struct.indices2)
         for i in range(n):
             r, c = int(struct.positions[i, 0]), int(struct.positions[i, 1])
-            row_off = _tile_pixel_offset(r, rows, full_h, t)
-            col_off = _tile_pixel_offset(c, cols, full_w, t)
+            row_off = tile_pixel_offset(r, rows, full_h, t)
+            col_off = tile_pixel_offset(c, cols, full_w, t)
             mosaic[row_off : row_off + t, col_off : col_off + t] = (
                 struct.codebooks1[i][struct.indices1[i]] + cb2[i][idx2[i]]
             )
     else:
         for i in range(n):
             r, c = int(struct.positions[i, 0]), int(struct.positions[i, 1])
-            row_off = _tile_pixel_offset(r, rows, full_h, t)
-            col_off = _tile_pixel_offset(c, cols, full_w, t)
+            row_off = tile_pixel_offset(r, rows, full_h, t)
+            col_off = tile_pixel_offset(c, cols, full_w, t)
             mosaic[row_off : row_off + t, col_off : col_off + t] = struct.codebooks1[i][
                 struct.indices1[i]
             ]
