@@ -89,6 +89,22 @@ _MAX_CONCURRENCY = int(
 )
 _COMPUTE_SEM = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 
+# waitress worker threads (see main()). _compute_slot() below wraps the *entire*
+# handler, including read_region()'s geotessera/S3 fetch -- which for a cold bbox
+# (tiles not yet cached locally) can take minutes, not the sub-second CPU-bound
+# k-means step alone. That fetch is network-wait, not CPU, so it doesn't need to
+# be capped as tightly as _MAX_CONCURRENCY -- give it real headroom above that so
+# a burst of cold-cache requests still queues up to _MAX_CONCURRENCY deep waiting
+# on the (cheap) semaphore, rather than queuing behind waitress's own worker pool
+# first. Without enough threads here, _COMPUTE_SEM's clean 429 load-shedding is
+# unreachable in practice: confirmed live (tee.cl, 2026-08-07) -- with waitress's
+# old default of 4 threads and _MAX_CONCURRENCY=22 on a 24-core host, a handful of
+# concurrent cold-bbox requests (each pinned on S3 download for 1-4+ minutes) was
+# enough to exhaust all 4 threads and back requests up in waitress's own queue
+# ("Task queue depth is N" in the logs) well before the semaphore was ever tested,
+# surfacing as opaque client-side timeouts instead of a clean 429.
+_THREADS = int(os.environ.get("TESSERA_VQ_THREADS", str(_MAX_CONCURRENCY + 8)))
+
 
 @contextmanager
 def _compute_slot() -> Iterator[None]:
@@ -412,12 +428,18 @@ def main() -> None:
     Bind address is ``TESSERA_VQ_BIND`` (``host:port``, default ``0.0.0.0:8000``).
     Set it to ``127.0.0.1:8010`` to keep the bolt-on internal behind an nginx (or
     other) reverse proxy that owns the public port and does per-IP rate limiting.
+
+    ``threads`` (see ``_THREADS`` above) used to be waitress's own default of 4 --
+    fine for CPU-bound work, but this app's handlers spend most of their wall time
+    blocked on a network fetch (read_region -> geotessera -> S3), so 4 threads
+    capped real concurrency far below what _MAX_CONCURRENCY/_COMPUTE_SEM already
+    intend to allow.
     """
     from waitress import serve  # type: ignore  # noqa: PLC0415
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     host, _, port = os.environ.get("TESSERA_VQ_BIND", "0.0.0.0:8000").rpartition(":")
-    serve(app, host=host or "0.0.0.0", port=int(port))  # noqa: S104
+    serve(app, host=host or "0.0.0.0", port=int(port), threads=_THREADS)  # noqa: S104
 
 
 if __name__ == "__main__":

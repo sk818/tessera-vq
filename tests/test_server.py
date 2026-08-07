@@ -46,6 +46,32 @@ def test_no_tiles_message_includes_dims_and_t() -> None:
     assert "smaller t" in msg or "larger bbox" in msg
 
 
+def test_threads_has_headroom_over_max_concurrency() -> None:
+    """_compute_slot() wraps the whole handler including read_region()'s
+    network-bound geotessera/S3 fetch, so waitress needs enough worker threads
+    to actually dispatch _MAX_CONCURRENCY requests concurrently -- otherwise
+    _COMPUTE_SEM's clean 429 load-shedding is unreachable and requests instead
+    queue silently inside waitress (observed live on tee.cl as opaque
+    client-side timeouts, "Task queue depth is N" in the logs, with waitress's
+    old unconfigured default of 4 threads vs. _MAX_CONCURRENCY=22)."""
+    assert server._THREADS > server._MAX_CONCURRENCY
+
+
+def test_threads_reads_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TESSERA_VQ_THREADS, like the other TESSERA_VQ_* knobs, is settable
+    without a code change -- reload the module with the env var set rather
+    than reaching into the private constant, since it's computed at import
+    time."""
+    import importlib
+
+    monkeypatch.setenv("TESSERA_VQ_THREADS", "77")
+    try:
+        importlib.reload(server)
+        assert server._THREADS == 77
+    finally:
+        importlib.reload(server)  # restore module state for later tests
+
+
 def test_version_endpoint_returns_dataset_version(monkeypatch: pytest.MonkeyPatch) -> None:
     """``/version`` reports the resolved Tessera dataset version as JSON."""
     monkeypatch.setattr(server, "get_dataset_version", lambda: "1.1")
