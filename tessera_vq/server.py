@@ -57,7 +57,14 @@ _KM_PER_DEG_LAT = 111.32
 
 # Durable RVQ response cache (WS-2). Off unless TESSERA_VQ_CACHE_DIR is set, so dev/tests
 # never write a cache; michael enables it via env. Default cap 500 GB (~287k tiles).
-_WIRE_FORMAT = "rvq-int8-gz-2"  # bump if the /quantized_rvq NPZ schema changes
+# Bump on ANY change that changes what bytes a given (bbox, year, t, k1, k2, m, ...)
+# key would now compute -- not just an NPZ field/dtype change. 0.6.0's tiling fix
+# (tile_pixel_offset's pulled-back last tile) is exactly this: same field names and
+# dtypes, but a stale cache entry from before that fix would silently keep serving
+# the old (tile-dropping) positions/indices for a bbox someone had already requested,
+# defeating the fix for every previously-cached location until this bump forces a
+# recompute (confirmed empirically -- the bug this comment exists to prevent).
+_WIRE_FORMAT = "rvq-int8-gz-3"  # bump if a cached response would no longer be correct
 _CACHE_DIR = os.environ.get("TESSERA_VQ_CACHE_DIR")
 _CACHE_MAX_GB = float(os.environ.get("TESSERA_VQ_CACHE_MAX_GB", "500"))
 _CACHE: TileCache | None = TileCache(_CACHE_DIR, int(_CACHE_MAX_GB * 1e9)) if _CACHE_DIR else None
