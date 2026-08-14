@@ -85,6 +85,23 @@ def sample_window_locations(n: int, year: int, seed: int) -> npt.NDArray[np.floa
     return centers[idx]
 
 
+# Zarr disabled for now (2026-08-14): the public zarr store
+# (data.source.coop/.../zarr/v1) is intermittently returning truncated
+# byte-range responses on shard reads -- aiohttp.client_exceptions.
+# ClientPayloadError: "Not enough data to satisfy content length header" --
+# and the underlying fsspec/aiohttp stack has no read-timeout catching a
+# stalled connection quickly, so a bad read can hang for minutes before
+# finally erroring instead of falling back. Per Anil (geotessera maintainer,
+# 2026-08-13 Zulip thread): the zarr publication was "a one-off conversion
+# ... we'll never revisit 1.0 again" -- i.e. not meant to be depended on for
+# live serving the way this bolt-on was using it as a fast-path. npy (via
+# plain GeoTessera.fetch_mosaic_for_region) is the supported path and has
+# been reliable. Flip this back to True once the zarr store's reliability
+# is sorted out; the zarr-reading machinery below (zarr_utils.get_zarr,
+# probe_zarr_coverage, read_region_chunked) is left in place, just unused.
+_USE_ZARR = False
+
+
 def read_region(
     bounds: tuple[float, float, float, float],
     year: int,
@@ -95,8 +112,9 @@ def read_region(
     """Read ``(H, W, 128)`` float32 EPSG:4326 for ``bounds``; zarr if covered, else bbox.
 
     Returns ``(mosaic_or_None, transform_or_None, path)`` with ``path`` in
-    ``{"zarr", "bbox", "empty"}``. ``transform`` is the ``affine.Affine`` mapping
-    pixel ``(row, col)`` -> ``(lon, lat)`` for the *returned* mosaic. Both paths
+    ``{"zarr", "bbox", "empty"}`` (``"zarr"`` currently unreachable -- see
+    ``_USE_ZARR``). ``transform`` is the ``affine.Affine`` mapping pixel
+    ``(row, col)`` -> ``(lon, lat)`` for the *returned* mosaic. Both paths
     can return more ground than ``bounds`` asked for -- the zarr multi-chunk
     path via reprojection/chunk-grid edges, the bbox path because geotessera's
     ``fetch_mosaic_for_region`` returns the union of whichever source tiles
@@ -108,11 +126,12 @@ def read_region(
     several km. Propagating the real transform through the bolt-on wire
     format is what fixes that; see ``QuantizedStructure.origin``.)
     """
-    gtz = zarr_utils.get_zarr() if gtz is None else gtz
-    if gtz is not None and zarr_utils.probe_zarr_coverage(gtz, bounds, year):
-        mosaic, transform, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
-        if mosaic is not None:
-            return np.asarray(mosaic, dtype=np.float32), transform, "zarr"
+    if _USE_ZARR:
+        gtz = zarr_utils.get_zarr() if gtz is None else gtz
+        if gtz is not None and zarr_utils.probe_zarr_coverage(gtz, bounds, year):
+            mosaic, transform, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
+            if mosaic is not None:
+                return np.asarray(mosaic, dtype=np.float32), transform, "zarr"
     gt = get_geotessera() if gt is None else gt
     mosaic, transform, _ = gt.fetch_mosaic_for_region(bounds, year=year, target_crs="EPSG:4326")
     if mosaic is None:
