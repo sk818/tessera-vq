@@ -145,6 +145,32 @@ def test_rvq_quantize_window_for_serving_shapes() -> None:
     assert pos.shape == (4, 2)
 
 
+def test_rvq_quantize_window_for_serving_parallel_matches_sequential_order() -> None:
+    """Splitting tiles across worker processes must not change output order.
+
+    positions/codebooks/indices are consumed by index (public/js/vq_reconstruct.js
+    places tile i by array position, not by reading positions[i]), so this is a
+    correctness requirement, not just a nice-to-have: n_jobs=1 (one batch, no
+    reordering possible) is the reference; a real multi-worker split (more tiles
+    than workers, so batches interleave via round-robin striding) must produce
+    byte-identical output in the same order, not just the same set of tiles.
+    """
+    window = _three_cluster_tile(96, 96, 128, seed=3)  # 6x6 = 36 tiles at t=16
+    t, k1, k2, seed = 16, 4, 4, 42
+    cbs1_seq, idxs1_seq, cbs2_seq, idxs2_seq, pos_seq = rvq_quantize_window_for_serving(
+        window, t, k1, k2, "euclidean", seed, n_jobs=1
+    )
+    cbs1_par, idxs1_par, cbs2_par, idxs2_par, pos_par = rvq_quantize_window_for_serving(
+        window, t, k1, k2, "euclidean", seed, n_jobs=5
+    )
+    assert pos_seq.shape[0] == 36  # sanity: this test actually exercises >1 tile per worker
+    np.testing.assert_array_equal(pos_seq, pos_par)
+    np.testing.assert_array_equal(cbs1_seq, cbs1_par)
+    np.testing.assert_array_equal(idxs1_seq, idxs1_par)
+    np.testing.assert_array_equal(cbs2_seq, cbs2_par)
+    np.testing.assert_array_equal(idxs2_seq, idxs2_par)
+
+
 def test_quantize_window_residual_norms_skips_nan_tiles() -> None:
     """Tiles containing NaN are dropped from the residual norm pool."""
     window = _three_cluster_tile(64, 64, 128, seed=7).copy()

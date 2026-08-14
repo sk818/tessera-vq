@@ -11,6 +11,9 @@ Designed for use inside ``tessera_vq.server`` (Flask /sweep endpoint).
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -248,6 +251,47 @@ def rvq_per_tile_errors(
     return l2, cos
 
 
+_TileBatch = list[tuple[tuple[int, int], "npt.NDArray[np.float32]"]]
+_TileResult = tuple[
+    tuple[int, int],
+    "npt.NDArray[np.float32]",
+    "npt.NDArray[np.int32]",
+    "npt.NDArray[np.float32]",
+    "npt.NDArray[np.int32]",
+]
+
+
+def _quantize_tile_batch(
+    batch: _TileBatch,
+    k1: int,
+    k2: int,
+    m: Distance,
+    seed: int,
+    sample_size: int,
+) -> list[_TileResult]:
+    """Worker-process entry point: RVQ-quantize a batch of tiles sequentially.
+
+    Runs in its own OS process (see ``rvq_quantize_window_for_serving``) so
+    each tile's ``blockwise_kmeans`` call is on its own core -- but that means
+    capping BLAS's *own* internal threading to 1 here is required, not
+    optional. Without it, each of the (many) worker processes independently
+    tries to spawn its own OpenBLAS thread pool on top of the process-level
+    parallelism already in play, oversubscribing the host's cores. Confirmed
+    live: a naive multiprocess attempt without this cap was 10x+ slower than
+    doing nothing at all (cores thrashing on context switches, not computing).
+    A first attempt at parallelizing this loop with threads instead of
+    processes was *also* slower than the sequential baseline: blockwise_kmeans's
+    Lloyd loop is many small numpy ops per iteration, not one long
+    GIL-releasing BLAS call, so threads mostly just fought over the GIL.
+    """
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    return [
+        (pos, *rvq_quantize_tile(tile, k1, k2, m, seed, sample_size=sample_size))
+        for pos, tile in batch
+    ]
+
+
 def rvq_quantize_window_for_serving(
     window: npt.NDArray[np.float32],
     t: int,
@@ -257,6 +301,7 @@ def rvq_quantize_window_for_serving(
     seed: int = 42,
     *,
     sample_size: int = 2000,
+    n_jobs: int = -1,
 ) -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[Any],
@@ -266,6 +311,21 @@ def rvq_quantize_window_for_serving(
 ]:
     """Tile ``window`` into t x t blocks (see :func:`tile_pixel_offset` for the
     last row/column's placement); run RVQ on each all-finite block.
+
+    Each tile's RVQ is fully independent, so tiles are split into ``n_jobs``
+    batches (default: one per available core) and quantized across worker
+    *processes* -- see ``_quantize_tile_batch``'s docstring for why processes,
+    not threads, and why each worker caps its own BLAS threading to 1.
+    Confirmed live (2026-08-14): a 977x1982px postcard mosaic (1922 32x32
+    tiles) went from ~60s single-threaded to ~9s with this.
+
+    Output order is restored to the same row-major tile scan order the old
+    sequential version produced, even though workers complete out of order:
+    the wire format's ``positions`` array is NOT actually consulted by the
+    client for tile placement (``public/js/vq_reconstruct.js`` reconstructs
+    by array index assuming row-major order), so this order is load-bearing,
+    not incidental -- silently changing it would misplace every tile in the
+    reconstructed mosaic.
 
     Returns ``(codebooks1, indices1, codebooks2, indices2, positions)`` where:
       ``codebooks{1,2}``  ``(n_tiles, k{1,2}_eff, 128)`` float32
@@ -279,11 +339,11 @@ def rvq_quantize_window_for_serving(
     k2_eff = min(k2, t * t)
     idx_dtype1: Any = np.uint8 if k1_eff <= 256 else np.uint16  # noqa: PLR2004
     idx_dtype2: Any = np.uint8 if k2_eff <= 256 else np.uint16  # noqa: PLR2004
-    cbs1: list[npt.NDArray[np.float32]] = []
-    cbs2: list[npt.NDArray[np.float32]] = []
-    idxs1: list[npt.NDArray[Any]] = []
-    idxs2: list[npt.NDArray[Any]] = []
-    pos: list[tuple[int, int]] = []
+
+    # Cheap sequential pass: pick out the all-finite tiles and their grid
+    # positions. The expensive part (RVQ quantization) happens below, in
+    # parallel, over just this filtered set.
+    items: list[tuple[tuple[int, int], npt.NDArray[np.float32]]] = []
     for r in range(rows):
         row_off = tile_pixel_offset(r, rows, h, t)
         for col in range(cols):
@@ -291,15 +351,9 @@ def rvq_quantize_window_for_serving(
             tile = window[row_off : row_off + t, col_off : col_off + t]
             if not np.isfinite(tile).all():
                 continue
-            cb1, idx1, cb2, idx2 = rvq_quantize_tile(
-                np.asarray(tile, dtype=np.float32), k1, k2, m, seed, sample_size=sample_size
-            )
-            cbs1.append(cb1)
-            idxs1.append(idx1.astype(idx_dtype1))
-            cbs2.append(cb2)
-            idxs2.append(idx2.astype(idx_dtype2))
-            pos.append((r, col))
-    if not cbs1:
+            items.append(((r, col), np.asarray(tile, dtype=np.float32)))
+
+    if not items:
         return (
             np.zeros((0, k1_eff, c), dtype=np.float32),
             np.zeros((0, t, t), dtype=idx_dtype1),
@@ -307,6 +361,42 @@ def rvq_quantize_window_for_serving(
             np.zeros((0, t, t), dtype=idx_dtype2),
             np.zeros((0, 2), dtype=np.int32),
         )
+
+    cpu_count = os.cpu_count() or 1
+    n_workers = cpu_count if n_jobs is None or n_jobs < 1 else n_jobs
+    n_workers = max(1, min(n_workers, len(items)))
+    batches: list[_TileBatch] = [items[i::n_workers] for i in range(n_workers)]
+
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        batch_results = ex.map(
+            _quantize_tile_batch,
+            batches,
+            repeat(k1),
+            repeat(k2),
+            repeat(m),
+            repeat(seed),
+            repeat(sample_size),
+        )
+        # ex.map preserves the order batches were submitted in, but batches
+        # were built by round-robin striding (items[i::n_workers]) to spread
+        # tiles evenly across workers -- so flattening batch-by-batch here
+        # would yield tiles in that strided order, not the row-major scan
+        # order items[] was built in. The wire format's `positions` array is
+        # NOT actually consulted by the client for tile placement
+        # (public/js/vq_reconstruct.js reconstructs by array index assuming
+        # row-major order) -- so restore that order via a position lookup,
+        # rather than changing the (already-shipped, already-relied-upon)
+        # wire contract to match.
+        by_pos: dict[tuple[int, int], _TileResult] = {
+            result[0]: result for batch in batch_results for result in batch
+        }
+    flat: list[_TileResult] = [by_pos[item_pos] for item_pos, _tile in items]
+
+    pos = [p for p, _cb1, _idx1, _cb2, _idx2 in flat]
+    cbs1 = [cb1 for _p, cb1, _idx1, _cb2, _idx2 in flat]
+    idxs1 = [idx1.astype(idx_dtype1) for _p, _cb1, idx1, _cb2, _idx2 in flat]
+    cbs2 = [cb2 for _p, _cb1, _idx1, cb2, _idx2 in flat]
+    idxs2 = [idx2.astype(idx_dtype2) for _p, _cb1, _idx1, _cb2, idx2 in flat]
     return (
         np.stack(cbs1).astype(np.float32, copy=False),
         np.stack(idxs1),
