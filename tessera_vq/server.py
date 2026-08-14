@@ -105,6 +105,22 @@ _COMPUTE_SEM = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 # surfacing as opaque client-side timeouts instead of a clean 429.
 _THREADS = int(os.environ.get("TESSERA_VQ_THREADS", str(_MAX_CONCURRENCY + 8)))
 
+# Per-request RVQ worker cap (2026-08-14 follow-up to the sweep.py parallelization):
+# rvq_quantize_window_for_serving defaults to n_jobs=-1 ("grab every core"), which
+# is correct for a single request in isolation but not for this server: up to
+# _MAX_CONCURRENCY requests can be live at once, and if more than one is actually
+# quantizing (the CPU-bound phase, as opposed to the network-bound tile download)
+# at the same moment, they oversubscribe each other's cores exactly like a single
+# request's own worker processes used to oversubscribe BLAS internally (see
+# sweep.py's history for that fix). Confirmed live: two concurrent postcard
+# requests turned a ~9s quantization into several minutes of wall-clock time.
+# Capped to a quarter of the host's cores per request -- up to ~4 requests can
+# still quantize at full parallel speed simultaneously before degrading, rather
+# than 2 already causing 2x oversubscription.
+_RVQ_WORKERS_PER_REQUEST = int(
+    os.environ.get("TESSERA_VQ_RVQ_WORKERS", str(max(1, (os.cpu_count() or 4) // 4)))
+)
+
 
 @contextmanager
 def _compute_slot() -> Iterator[None]:
@@ -244,7 +260,7 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
             if mosaic is None:
                 raise _NoDataError
             cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
-                mosaic, t, k1, k2, m, seed, sample_size=sample_size
+                mosaic, t, k1, k2, m, seed, sample_size=sample_size, n_jobs=_RVQ_WORKERS_PER_REQUEST
             )
             logger.info(
                 "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
