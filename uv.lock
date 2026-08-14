@@ -3828,6 +3828,7 @@ dev = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "tessera-zarr-utils", extra = ["geotessera"] },
+    { name = "threadpoolctl" },
     { name = "waitress" },
 ]
 server = [
@@ -3839,6 +3840,7 @@ server = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "tessera-zarr-utils", extra = ["geotessera"] },
+    { name = "threadpoolctl" },
     { name = "waitress" },
 ]
 sweep = [
@@ -3855,6 +3857,7 @@ sweep = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "tessera-zarr-utils", extra = ["geotessera"] },
+    { name = "threadpoolctl" },
     { name = "waitress" },
 ]
 
@@ -3884,6 +3887,7 @@ requires-dist = [
     { name = "tessera-vq", extras = ["server"], marker = "extra == 'sweep'" },
     { name = "tessera-vq", extras = ["server", "sweep"], marker = "extra == 'dev'" },
     { name = "tessera-zarr-utils", extras = ["geotessera"], marker = "extra == 'server'", git = "https://github.com/ucam-eo/tessera-zarr-utils.git?rev=v0.3.0" },
+    { name = "threadpoolctl", marker = "extra == 'server'", specifier = ">=3.0" },
     { name = "waitress", marker = "extra == 'server'", specifier = ">=3.0" },
 ]
 provides-extras = ["server", "sweep", "dev"]

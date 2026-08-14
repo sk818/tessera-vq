@@ -19,6 +19,7 @@ from typing import Any, Literal, cast
 import numpy as np
 import numpy.typing as npt
 from blockwise_kmeans import assign_blocked, kmeans_fit
+from threadpoolctl import threadpool_limits
 
 Distance = Literal["euclidean", "cosine"]
 
@@ -271,25 +272,41 @@ def _quantize_tile_batch(
 ) -> list[_TileResult]:
     """Worker-process entry point: RVQ-quantize a batch of tiles sequentially.
 
-    Runs in its own OS process (see ``rvq_quantize_window_for_serving``) so
-    each tile's ``blockwise_kmeans`` call is on its own core -- but that means
-    capping BLAS's *own* internal threading to 1 here is required, not
-    optional. Without it, each of the (many) worker processes independently
-    tries to spawn its own OpenBLAS thread pool on top of the process-level
-    parallelism already in play, oversubscribing the host's cores. Confirmed
-    live: a naive multiprocess attempt without this cap was 10x+ slower than
-    doing nothing at all (cores thrashing on context switches, not computing).
-    A first attempt at parallelizing this loop with threads instead of
-    processes was *also* slower than the sequential baseline: blockwise_kmeans's
-    Lloyd loop is many small numpy ops per iteration, not one long
-    GIL-releasing BLAS call, so threads mostly just fought over the GIL.
+    Runs in its own (forked) OS process -- see ``rvq_quantize_window_for_serving``
+    -- so each tile's ``blockwise_kmeans`` call is on its own core. But that
+    means capping BLAS's *own* internal threading to 1 for the duration of this
+    call is required, not optional: without it, each of the many worker
+    processes independently tries to spawn its own OpenBLAS thread pool on top
+    of the process-level parallelism already in play, oversubscribing the
+    host's cores. Confirmed live: a naive multiprocess attempt without any cap
+    was 10x+ slower than doing nothing at all (cores thrashing on context
+    switches, not computing).
+
+    Uses ``threadpoolctl.threadpool_limits`` rather than setting
+    ``OPENBLAS_NUM_THREADS``/``OMP_NUM_THREADS`` env vars: a forked worker
+    inherits whatever thread pool OpenBLAS already spun up on the *parent*
+    process's own first BLAS call (e.g. an earlier, unrelated request in this
+    same long-lived server process), and env vars are typically read once at
+    a library's initial thread-pool creation -- setting them here, after
+    fork, does NOT retroactively shrink a pool OpenBLAS already created in
+    the parent before this process existed. Confirmed live: that env-var
+    version looked fine in an isolated fresh-process benchmark, but
+    reproduced the exact oversubscription regression it was meant to prevent
+    as soon as a prior sequential call had already touched BLAS in the same
+    parent process first -- i.e. under conditions that actually match how
+    the bolt-on server runs (many requests, one long-lived process).
+    ``threadpool_limits`` instead reaches into the already-running native
+    thread pool at runtime and changes its actual size, so it works
+    regardless of when or how it was first initialized. (An ``mp_context=
+    spawn`` alternative -- fresh interpreter per worker, never inherits
+    parent state -- was also tried and discarded: confirmed live, worker
+    startup was slow enough on this host to make the pool appear to hang.)
     """
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["OMP_NUM_THREADS"] = "1"
-    return [
-        (pos, *rvq_quantize_tile(tile, k1, k2, m, seed, sample_size=sample_size))
-        for pos, tile in batch
-    ]
+    with threadpool_limits(limits=1):
+        return [
+            (pos, *rvq_quantize_tile(tile, k1, k2, m, seed, sample_size=sample_size))
+            for pos, tile in batch
+        ]
 
 
 def rvq_quantize_window_for_serving(
