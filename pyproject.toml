@@ -31,7 +31,16 @@ server = [
     "scipy>=1.13",
     "joblib>=1.4",
     "rasterio>=1.3",
-    "geotessera>=0.9",
+    # Pinned to a commit on main (ucam-eo/geotessera#357, merged 2026-08-13)
+    # rather than a PyPI floor: that PR switches embedding downloads to
+    # source.coop (fronted by Cloudflare, notably faster than the old AWS
+    # path) and adds v1.1/v2 dataset-version support. No PyPI release has
+    # been cut yet (still 0.9.0 there) -- a bare ">=0.9" floor silently
+    # resolves to that old, slower release. Confirmed live: the bolt-on
+    # server on michael was still running geotessera 0.9.0 well after this
+    # PR merged, because nothing here pinned past the PyPI floor. Revisit
+    # once a PyPI release includes the source.coop switch.
+    "geotessera @ git+https://github.com/ucam-eo/geotessera.git@2a52eefcb07988129df2e48cfa5abd694e58b75c",
     # zarr region reads (tessera_vq.data / canonical) use the standalone
     # tessera-zarr-utils package (single source of the cross-UTM-zone 4326 merge);
     # this drops the old tessera-eval dep (and its geopandas/sklearn pull-in).
