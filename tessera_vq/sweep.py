@@ -16,7 +16,6 @@ from typing import Any, Literal, cast
 import numpy as np
 import numpy.typing as npt
 from blockwise_kmeans import assign_blocked, kmeans_fit
-from joblib import Parallel, delayed
 
 Distance = Literal["euclidean", "cosine"]
 
@@ -258,7 +257,6 @@ def rvq_quantize_window_for_serving(
     seed: int = 42,
     *,
     sample_size: int = 2000,
-    n_jobs: int = -1,
 ) -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[Any],
@@ -268,16 +266,6 @@ def rvq_quantize_window_for_serving(
 ]:
     """Tile ``window`` into t x t blocks (see :func:`tile_pixel_offset` for the
     last row/column's placement); run RVQ on each all-finite block.
-
-    Each tile's RVQ is fully independent (own blockwise_kmeans fit, no shared
-    state), so tiles are quantized in parallel across ``n_jobs`` worker threads
-    (default: all available cores) via joblib -- same pattern as
-    ``tessera_vq.data``'s per-window sampling. Confirmed live (2026-08-14): a
-    977x1982px postcard mosaic (1922 32x32 tiles) took ~60s single-threaded on
-    the bolt-on's 24-core-but-old-CPU host despite the cores sitting idle --
-    each tile's blockwise_kmeans call releases the GIL for its actual BLAS
-    work, so threads (not processes, which would pickle each ~524KB tile
-    across process boundaries for no benefit) parallelize the real bottleneck.
 
     Returns ``(codebooks1, indices1, codebooks2, indices2, positions)`` where:
       ``codebooks{1,2}``  ``(n_tiles, k{1,2}_eff, 128)`` float32
@@ -291,11 +279,10 @@ def rvq_quantize_window_for_serving(
     k2_eff = min(k2, t * t)
     idx_dtype1: Any = np.uint8 if k1_eff <= 256 else np.uint16  # noqa: PLR2004
     idx_dtype2: Any = np.uint8 if k2_eff <= 256 else np.uint16  # noqa: PLR2004
-
-    # Cheap sequential pass: pick out the all-finite tiles and their grid
-    # positions. The expensive part (RVQ quantization) happens below, in
-    # parallel, over just this filtered set.
-    tiles: list[npt.NDArray[np.float32]] = []
+    cbs1: list[npt.NDArray[np.float32]] = []
+    cbs2: list[npt.NDArray[np.float32]] = []
+    idxs1: list[npt.NDArray[Any]] = []
+    idxs2: list[npt.NDArray[Any]] = []
     pos: list[tuple[int, int]] = []
     for r in range(rows):
         row_off = tile_pixel_offset(r, rows, h, t)
@@ -304,10 +291,15 @@ def rvq_quantize_window_for_serving(
             tile = window[row_off : row_off + t, col_off : col_off + t]
             if not np.isfinite(tile).all():
                 continue
-            tiles.append(np.asarray(tile, dtype=np.float32))
+            cb1, idx1, cb2, idx2 = rvq_quantize_tile(
+                np.asarray(tile, dtype=np.float32), k1, k2, m, seed, sample_size=sample_size
+            )
+            cbs1.append(cb1)
+            idxs1.append(idx1.astype(idx_dtype1))
+            cbs2.append(cb2)
+            idxs2.append(idx2.astype(idx_dtype2))
             pos.append((r, col))
-
-    if not tiles:
+    if not cbs1:
         return (
             np.zeros((0, k1_eff, c), dtype=np.float32),
             np.zeros((0, t, t), dtype=idx_dtype1),
@@ -315,14 +307,6 @@ def rvq_quantize_window_for_serving(
             np.zeros((0, t, t), dtype=idx_dtype2),
             np.zeros((0, 2), dtype=np.int32),
         )
-
-    results = Parallel(n_jobs=n_jobs, prefer="threads")(
-        delayed(rvq_quantize_tile)(tile, k1, k2, m, seed, sample_size=sample_size) for tile in tiles
-    )
-    cbs1 = [cb1 for cb1, _idx1, _cb2, _idx2 in results]
-    idxs1 = [idx1.astype(idx_dtype1) for _cb1, idx1, _cb2, _idx2 in results]
-    cbs2 = [cb2 for _cb1, _idx1, cb2, _idx2 in results]
-    idxs2 = [idx2.astype(idx_dtype2) for _cb1, _idx1, _cb2, idx2 in results]
     return (
         np.stack(cbs1).astype(np.float32, copy=False),
         np.stack(idxs1),
