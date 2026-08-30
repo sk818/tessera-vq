@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-vq"
-version = "0.6.4"
+version = "0.7.0"
 description = "Per-tile vector quantisation of Tessera embeddings: library, optional server, plug-compatible client."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -38,20 +38,13 @@ server = [
     # only a transitive dep via scikit-learn/scipy -- pin explicitly now that
     # we import it ourselves, rather than relying on it riding along.
     "threadpoolctl>=3.0",
-    # Pinned to a commit on main (ucam-eo/geotessera#357, merged 2026-08-13)
-    # rather than a PyPI floor: that PR switches embedding downloads to
-    # source.coop (fronted by Cloudflare, notably faster than the old AWS
-    # path) and adds v1.1/v2 dataset-version support. No PyPI release has
-    # been cut yet (still 0.9.0 there) -- a bare ">=0.9" floor silently
-    # resolves to that old, slower release. Confirmed live: the bolt-on
-    # server on michael was still running geotessera 0.9.0 well after this
-    # PR merged, because nothing here pinned past the PyPI floor. Revisit
-    # once a PyPI release includes the source.coop switch.
-    "geotessera @ git+https://github.com/ucam-eo/geotessera.git@2a52eefcb07988129df2e48cfa5abd694e58b75c",
-    # zarr region reads (tessera_vq.data / canonical) use the standalone
-    # tessera-zarr-utils package (single source of the cross-UTM-zone 4326 merge);
-    # this drops the old tessera-eval dep (and its geopandas/sklearn pull-in).
-    "tessera-zarr-utils[geotessera] @ git+https://github.com/ucam-eo/tessera-zarr-utils.git@v0.3.0",
+    # >=0.10.1: source.coop embedding hosting (0.10 retired the old host), all
+    # published dataset years served, and the UTM-zone-boundary fix in
+    # GeoTesseraZarr. zarr reads go through GeoTesseraZarr directly now (see
+    # tessera_vq/_zarr.py) -- the external tessera-zarr-utils package existed
+    # only to work around bugs 0.10.1 fixes, so it's dropped. Ships zarr/xarray/
+    # obstore in the base wheel; no extra needed.
+    "geotessera>=0.10.1",
 ]
 # Large-scale parameter sweeps + analysis (tessera_vq.sweep, UK isotropy
 # scripts, parquet-with-provenance outputs). Pulls server bits transitively.

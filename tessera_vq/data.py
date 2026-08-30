@@ -1,10 +1,10 @@
 """Data loaders for Tessera embeddings, Pool A diagnostics, and downstream tasks.
 
-Implemented in Phase 1 (docs/spec.md) over geotessera (zarr via the
-``tessera-zarr-utils`` package, with a bounding-box fallback): ``read_region``,
-``iter_pool_a_windows``, ``sample_isotropy_points``. Land-only sampling from
-geotessera coverage; no embeddings persisted. ``load_downstream`` is deferred
-(Phases 5-6).
+Implemented in Phase 1 (docs/spec.md) over geotessera (zarr via
+``GeoTesseraZarr`` -- see ``tessera_vq._zarr`` -- with a bounding-box
+fallback): ``read_region``, ``iter_pool_a_windows``,
+``sample_isotropy_points``. Land-only sampling from geotessera coverage;
+no embeddings persisted. ``load_downstream`` is deferred (Phases 5-6).
 """
 
 from __future__ import annotations
@@ -17,10 +17,13 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-import tessera_zarr_utils as _zarr_utils
 from joblib import Parallel, delayed
 
-# tessera_zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
+from tessera_vq import _zarr as _zarr_utils
+
+# _zarr is untyped-adjacent (geotessera calls); alias as Any so strict mypy
+# accepts calls into it. Name kept as `zarr_utils` -- was the external
+# tessera-zarr-utils package before geotessera 0.10.1 made it unnecessary.
 zarr_utils: Any = _zarr_utils
 
 logger = logging.getLogger(__name__)
@@ -85,21 +88,17 @@ def sample_window_locations(n: int, year: int, seed: int) -> npt.NDArray[np.floa
     return centers[idx]
 
 
-# Zarr disabled for now (2026-08-14): the public zarr store
-# (data.source.coop/.../zarr/v1) is intermittently returning truncated
-# byte-range responses on shard reads -- aiohttp.client_exceptions.
-# ClientPayloadError: "Not enough data to satisfy content length header" --
-# and the underlying fsspec/aiohttp stack has no read-timeout catching a
-# stalled connection quickly, so a bad read can hang for minutes before
-# finally erroring instead of falling back. Per Anil (geotessera maintainer,
-# 2026-08-13 Zulip thread): the zarr publication was "a one-off conversion
-# ... we'll never revisit 1.0 again" -- i.e. not meant to be depended on for
-# live serving the way this bolt-on was using it as a fast-path. npy (via
-# plain GeoTessera.fetch_mosaic_for_region) is the supported path and has
-# been reliable. Flip this back to True once the zarr store's reliability
-# is sorted out; the zarr-reading machinery below (zarr_utils.get_zarr,
-# probe_zarr_coverage, read_region_chunked) is left in place, just unused.
-_USE_ZARR = False
+# Zarr fast path. Disabled 2026-08-14 (truncated byte-range reads + an
+# unfinished non-2024-year rollout + a UTM-zone-boundary bug) and routed
+# through the external tessera-zarr-utils package. Re-enabled 2026-08-30:
+# geotessera 0.10.1 serves every published year on native UTM grids and
+# fixes the zone-boundary bug, so the reads go through GeoTesseraZarr
+# directly (see tessera_vq._zarr) with a 20 GiB on-disk chunk cache. Cold,
+# it is ~8x faster than fetch_mosaic_for_region on a viewport-sized region
+# and streams ~1 MB of chunks instead of downloading 100-400 MB of whole
+# tiles. get_zarr() returns None on any open failure -> read_region falls
+# back to the npy path exactly as before.
+_USE_ZARR = True
 
 
 def read_region(

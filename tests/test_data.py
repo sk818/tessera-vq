@@ -51,11 +51,6 @@ def _patch_zarr_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(data.zarr_utils, "get_zarr", lambda: None)
 
 
-@pytest.mark.skipif(  # type: ignore[misc]  # pytest's decorator isn't fully typed under strict mypy
-    not data._USE_ZARR,
-    reason="zarr path disabled (2026-08-14, unreliable source.coop shard reads) -- "
-    "see data._USE_ZARR. Re-enable once it's flipped back on.",
-)
 def test_read_region_zarr_covered_propagates_real_transform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

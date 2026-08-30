@@ -19,15 +19,15 @@ from typing import Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
-import tessera_zarr_utils as _zarr_utils
 import yaml
 
+from tessera_vq import _zarr as _zarr_utils
 from tessera_vq.data import _read_window_native, _window_bounds, read_region
 
 logger = logging.getLogger(__name__)
 
-# tessera_zarr_utils is untyped; alias as Any so strict mypy accepts calls into it.
-# Matches the pattern used in tessera_vq/data.py.
+# Alias as Any so strict mypy accepts calls into it; matches tessera_vq/data.py.
+# Was the external tessera-zarr-utils package before geotessera 0.10.1.
 zarr_utils: Any = _zarr_utils
 
 PathChoice = Literal["zarr", "bbox", "unavailable"]
