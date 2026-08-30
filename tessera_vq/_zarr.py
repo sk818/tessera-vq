@@ -36,8 +36,11 @@ _ZARR_CACHE_MAX_BYTES = 20 * 1024**3  # bound the on-disk zarr chunk cache
 
 
 def _cache_dir() -> Path:
-    base = Path(os.environ.get("TESSERA_VQ_CACHE") or (Path.home() / ".cache" / "tessera-vq"))
-    d = base / "zarr"
+    # Same root as the RVQ response cache (TESSERA_VQ_CACHE_DIR, set on the
+    # michael deployment); a "zarr" subdir keeps the two apart. The 20 GiB cap
+    # below is independent of TESSERA_VQ_CACHE_MAX_GB.
+    base = os.environ.get("TESSERA_VQ_CACHE_DIR")
+    d = (Path(base) if base else Path.home() / ".cache" / "tessera-vq") / "zarr"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
