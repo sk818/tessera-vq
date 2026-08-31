@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 import numpy as np
+import numpy.typing as npt
 from flask import Flask, Response, jsonify, request
 
 from tessera_vq.codebook_codec import quantize_codebook_uint8
@@ -185,14 +186,19 @@ def quantized() -> Response:  # noqa: PLR0911
             mosaic, transform, path = read_region(bbox, year)
             if mosaic is None:
                 return _bad_request("no embeddings available for bbox", code=404)
+            mosaic, transform = _trim_nan_border(mosaic, transform)
+            if mosaic is None:
+                return _bad_request("no embeddings available for bbox", code=404)
             codebooks, indices, positions = quantize_window_for_serving(
                 mosaic, t, k, m, seed, sample_size=sample_size
             )
+            t_eff = int(indices.shape[1]) if positions.shape[0] else t
             logger.info(
-                "quantized bbox=%s year=%d t=%d k=%d m=%s path=%s n_tiles=%d",
+                "quantized bbox=%s year=%d t=%d->%d k=%d m=%s path=%s n_tiles=%d",
                 bbox,
                 year,
                 t,
+                t_eff,
                 k,
                 m,
                 path,
@@ -206,7 +212,7 @@ def quantized() -> Response:  # noqa: PLR0911
                 codebooks=codebooks,
                 indices=indices,
                 positions=positions,
-                meta=np.asarray([t, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
+                meta=np.asarray([t_eff, k, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32),
                 distance=np.asarray(m),
                 # Real anchor for the returned mosaic's pixel (0, 0): (origin_lon,
                 # origin_lat, dx, dy). Without this, reconstruct_from_structure has
@@ -259,14 +265,19 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
             mosaic, transform, path = read_region(bbox, year)
             if mosaic is None:
                 raise _NoDataError
+            mosaic, transform = _trim_nan_border(mosaic, transform)
+            if mosaic is None:
+                raise _NoDataError
             cbs1, idxs1, cbs2, idxs2, positions = rvq_quantize_window_for_serving(
                 mosaic, t, k1, k2, m, seed, sample_size=sample_size, n_jobs=_RVQ_WORKERS_PER_REQUEST
             )
+            t_eff = int(idxs1.shape[1]) if positions.shape[0] else t
             logger.info(
-                "quantized_rvq bbox=%s year=%d t=%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
+                "quantized_rvq bbox=%s year=%d t=%d->%d k1=%d k2=%d m=%s path=%s n_tiles=%d",
                 bbox,
                 year,
                 t,
+                t_eff,
                 k1,
                 k2,
                 m,
@@ -293,7 +304,7 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
                 indices2=idxs2,
                 positions=positions,
                 meta=np.asarray(
-                    [t, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32
+                    [t_eff, k1, k2, year, mosaic.shape[0], mosaic.shape[1]], dtype=np.int32
                 ),
                 distance=np.asarray(m),
                 # See /quantized's identical field for why this is here.
@@ -416,6 +427,52 @@ def _no_tiles_message(mosaic_shape: tuple[int, ...], t: int) -> str:
         "either t is larger than the region, or every candidate tile contains NaN "
         "(e.g. from reprojection edges). Try a smaller t or a larger bbox."
     )
+
+
+def _trim_nan_border(
+    mosaic: npt.NDArray[np.float32], transform: Any
+) -> tuple[npt.NDArray[np.float32] | None, Any]:
+    """Peel all-NaN rows/cols off the mosaic edges, shifting the transform origin.
+
+    A UTM -> EPSG:4326 reprojection leaves NaN wedges in the grid corners (the
+    rotated source rectangle doesn't fill its 4326 bounding box), so no full
+    t x t tile touching a corner is all-finite. For a viewport-sized region
+    every candidate tile touches a corner -> no tiles at all. Peeling the NaN
+    border back to a clean interior rectangle fixes it (the tiler then clamps t
+    down to the trimmed size).
+
+    Only edge NaN is peeled: a NaN band through the interior would make the peel
+    consume every row/column, so if it collapses, the ORIGINAL window is
+    returned unchanged and the tiler's own all-finite check decides (422). Only
+    a genuinely empty (no finite pixel) window yields (None, None).
+    """
+    from affine import Affine  # noqa: PLC0415 (server-only dep, matches _zarr.py)
+
+    finite = np.asarray(np.isfinite(mosaic).all(axis=2))
+    if not finite.any():
+        return None, None
+    r0, c0 = 0, 0
+    r1, c1 = finite.shape
+    while r0 < r1 and c0 < c1:
+        top = not finite[r0, c0:c1].all()
+        bot = not finite[r1 - 1, c0:c1].all()
+        left = not finite[r0:r1, c0].all()
+        right = not finite[r0:r1, c1 - 1].all()
+        if not (top or bot or left or right):
+            break
+        if top:
+            r0 += 1
+        if bot:
+            r1 -= 1
+        if left:
+            c0 += 1
+        if right:
+            c1 -= 1
+    if r0 >= r1 or c0 >= c1:
+        return mosaic, transform  # interior NaN band -> leave it for the tiler
+    if (r0, c0, r1, c1) == (0, 0, *finite.shape):
+        return mosaic, transform
+    return mosaic[r0:r1, c0:c1], transform * Affine.translation(c0, r0)
 
 
 def _bbox_size_km(bbox: tuple[float, ...]) -> tuple[float, float]:

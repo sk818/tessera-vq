@@ -131,6 +131,10 @@ def quantize_window_for_serving(
         NOT pixel offsets; see :func:`tile_pixel_offset` to convert.
     """
     h, w, c = window.shape
+    # A tile can't be larger than the window. The exact tile size doesn't
+    # matter for VQ quality -- clamp so a small window still yields a tile
+    # instead of n_tiles_along returning 0.
+    t = max(1, min(t, h, w))
     rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     k_eff = min(k, t * t)
     # Any: older mypys won't narrow the conditional dtype expression; runtime is correct.
@@ -351,6 +355,10 @@ def rvq_quantize_window_for_serving(
         NOT pixel offsets; see :func:`tile_pixel_offset` to convert.
     """
     h, w, c = window.shape
+    # A tile can't be larger than the window. The exact tile size doesn't
+    # matter for RVQ quality -- clamp so a small window still yields a tile
+    # instead of n_tiles_along returning 0.
+    t = max(1, min(t, h, w))
     rows, cols = n_tiles_along(h, t), n_tiles_along(w, t)
     k1_eff = min(k1, t * t)
     k2_eff = min(k2, t * t)

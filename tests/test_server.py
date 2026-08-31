@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import threading
 from pathlib import Path
@@ -62,8 +63,6 @@ def test_threads_reads_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     without a code change -- reload the module with the env var set rather
     than reaching into the private constant, since it's computed at import
     time."""
-    import importlib
-
     monkeypatch.setenv("TESSERA_VQ_THREADS", "77")
     try:
         importlib.reload(server)
@@ -93,8 +92,9 @@ def _patch_read_region(monkeypatch: pytest.MonkeyPatch, window: npt.NDArray[np.f
     )
 
 
-def test_quantized_returns_422_when_no_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``/quantized`` returns 422 + diagnostic when t exceeds the all-finite area."""
+def test_quantized_clamps_t_to_a_window_smaller_than_t(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/quantized``: a window smaller than the requested t is served at the
+    largest t that fits (tile size doesn't matter for VQ), not 422."""
     rng = np.random.default_rng(0)
     window = rng.standard_normal((10, 10, 128)).astype(np.float32)
     _patch_read_region(monkeypatch, window)
@@ -103,17 +103,17 @@ def test_quantized_returns_422_when_no_tiles_fit(monkeypatch: pytest.MonkeyPatch
         "/quantized",
         json={"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k": 4},
     )
-    assert resp.status_code == 422
-    body = resp.get_json()
-    assert "error" in body
-    assert "t=32" in body["error"]
-    assert "10x10" in body["error"]
+    assert resp.status_code == 200
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert data["positions"].shape[0] == 1
+        assert int(data["meta"][0]) == 10  # t clamped 32 -> 10
+        assert data["indices"].shape == (1, 10, 10)
 
 
-def test_quantized_rvq_returns_422_when_no_tiles_fit(
+def test_quantized_rvq_clamps_t_to_a_window_smaller_than_t(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``/quantized_rvq`` returns 422 + diagnostic when t exceeds the all-finite area."""
+    """``/quantized_rvq``: same -- clamp t to the window, serve one tile."""
     rng = np.random.default_rng(0)
     window = rng.standard_normal((10, 10, 128)).astype(np.float32)
     _patch_read_region(monkeypatch, window)
@@ -122,10 +122,11 @@ def test_quantized_rvq_returns_422_when_no_tiles_fit(
         "/quantized_rvq",
         json={"bbox": [0.0, 50.0, 0.001, 50.001], "t": 32, "k1": 4, "k2": 4},
     )
-    assert resp.status_code == 422
-    body = resp.get_json()
-    assert "error" in body
-    assert "t=32" in body["error"]
+    assert resp.status_code == 200
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert data["positions"].shape[0] == 1
+        assert int(data["meta"][0]) == 10
+        assert data["indices1"].shape == (1, 10, 10)
 
 
 def test_quantized_rvq_returns_422_when_all_candidate_tiles_have_nan(
@@ -184,6 +185,37 @@ def test_quantized_rvq_succeeds_when_edge_tile_dodges_a_narrow_nan_strip(
     assert resp.status_code == 200
     with np.load(io.BytesIO(resp.data)) as data:
         assert data["positions"].shape[0] > 0
+
+
+def test_quantized_rvq_trims_reprojection_nan_corners_and_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The original bug: a ~viewport-sized zarr mosaic with triangular NaN
+    wedges in its corners (UTM->4326 reprojection) had no all-finite t=512
+    tile, so viewport creation 422'd. Now the NaN border is peeled to a clean
+    interior and the tile is served at a clamped t.
+    """
+    rng = np.random.default_rng(0)
+    h, w = 520, 521
+    window = rng.standard_normal((h, w, 128)).astype(np.float32)
+    wedge = 20
+    for i in range(wedge):  # triangular NaN in each corner
+        window[i, : wedge - i] = np.nan
+        window[i, w - (wedge - i) :] = np.nan
+        window[h - 1 - i, : wedge - i] = np.nan
+        window[h - 1 - i, w - (wedge - i) :] = np.nan
+    _patch_read_region(monkeypatch, window)
+    client = server.app.test_client()
+    resp = client.post(
+        "/quantized_rvq",
+        json={"bbox": [0.0865, 52.1552, 0.1598, 52.2001], "t": 512, "k1": 20, "k2": 256},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert data["positions"].shape[0] >= 1
+        t_eff = int(data["meta"][0])
+        assert t_eff < 512  # clamped below the trimmed interior
+        assert data["indices1"].shape[1] == t_eff
 
 
 def test_quantized_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> None:
