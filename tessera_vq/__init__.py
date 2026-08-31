@@ -9,6 +9,8 @@ payload returned by ``fetch_quantized_structure``, ``NoCoverageError`` for the
 "no embeddings here" failure mode, and the ``Distance`` literal type.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from tessera_vq.client import (
     Distance,
     NoCoverageError,
@@ -17,7 +19,12 @@ from tessera_vq.client import (
     reconstruct_from_structure,
 )
 
-__version__ = "0.5.6"
+try:
+    # Single source of truth: the installed package metadata (pyproject
+    # version), so __version__ can't silently drift from the release tag.
+    __version__ = version("tessera-vq")
+except PackageNotFoundError:  # running from a source tree that isn't installed
+    __version__ = "0+unknown"
 
 __all__ = [
     "Distance",

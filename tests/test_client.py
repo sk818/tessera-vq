@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import urllib.error
 from typing import Any
 
@@ -99,8 +100,6 @@ def _make_rvq_npz(
 
 def test_reconstruct_shape_and_transform() -> None:
     """A full grid yields the expected mosaic shape, EPSG:4326, and top-left affine."""
-    import math
-
     bbox = (0.0, 50.0, 0.1, 50.05)
     mosaic, transform, crs = _reconstruct(_make_npz(), bbox)
     assert mosaic.shape == (32, 48, 128)
