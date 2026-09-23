@@ -34,6 +34,20 @@ CHUNK_THRESHOLD = 0.2  # deg -- regions larger than this go through the chunked 
 CHUNK_SIZE = 0.1  # deg per chunk
 _ZARR_CACHE_MAX_BYTES = 20 * 1024**3  # bound the on-disk zarr chunk cache
 
+# Temporarily force every embedding read onto the NPY/bbox path, bypassing
+# GeoTesseraZarr entirely. The zarr fast path is currently using a smaller
+# chunk size than intended (Keshav, 2026-09-23) -- same symptom reported
+# independently for tessera-eval's compute server (Moustafa Eweda,
+# forwarded to Anil): the on-disk chunk cache only persists metadata, not
+# the actual tile data, so every read still hits the network regardless of
+# caching. Mirrors tessera-eval's identical _ZARR_DISABLED flag. get_zarr()
+# is the single choke point every caller in this module goes through
+# (data.py's own _USE_ZARR gate, canonical.py, iter_region_windows's
+# hard-require-zarr path) -- disabling it here covers all of them, rather
+# than needing a second flag per call site. Set back to False once
+# geotessera's chunk-size/caching behaviour is confirmed fixed upstream.
+_ZARR_DISABLED = True
+
 
 def _cache_dir() -> Path:
     # Same root as the RVQ response cache (TESSERA_VQ_CACHE_DIR, set on the
@@ -68,6 +82,8 @@ def _open_zarr() -> Any:
 
 def get_zarr() -> Any:
     """Cached ``GeoTesseraZarr`` handle, or ``None`` -- callers fall back to NPY."""
+    if _ZARR_DISABLED:
+        return None
     return _open_zarr()
 
 

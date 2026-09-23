@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 from affine import Affine
 
-from tessera_vq._zarr import _zone_split_spans, read_region_chunked
+import tessera_vq._zarr as zarr_mod
+from tessera_vq._zarr import _zone_split_spans, get_zarr, read_region_chunked
 
 pytest.importorskip("rasterio.warp")
 from rasterio.warp import transform as warp_transform  # noqa: E402
@@ -118,3 +119,38 @@ def test_read_region_chunked_no_data_returns_none() -> None:
             return None, None, None
 
     assert read_region_chunked(Empty(), (2.3, 48.8, 2.5, 49.0), 2024) == (None, None, None)
+
+
+def test_get_zarr_disabled_returns_none_without_even_trying_to_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The current production default (_ZARR_DISABLED=True, see its own
+    module comment -- the zarr fast path's chunk-size/caching bug means
+    every read hits the network regardless). get_zarr() must short-circuit
+    before ever opening the store, not just happen to return None."""
+    monkeypatch.setattr(zarr_mod, "_ZARR_DISABLED", True)
+    zarr_mod._open_zarr.cache_clear()
+    calls: list[Any] = []
+
+    def _make(**kw: Any) -> FakeZarr:
+        calls.append(kw)
+        return FakeZarr()
+
+    monkeypatch.setattr("geotessera.store.GeoTesseraZarr", _make)
+    assert get_zarr() is None
+    assert calls == [], "disabled zarr must not even attempt to open the store"
+
+
+def test_get_zarr_enabled_still_opens_the_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flip side of the disabled test above -- with _ZARR_DISABLED
+    False (re-enabled once the upstream bug is fixed), get_zarr() must
+    still reach the real open/cache logic in _open_zarr()."""
+
+    class _StoreWithYears(FakeZarr):
+        years = [2024, 2025]  # _open_zarr() only keeps a store with tiles
+        url = "fake://store"  # _open_zarr() logs this on success
+
+    monkeypatch.setattr(zarr_mod, "_ZARR_DISABLED", False)
+    zarr_mod._open_zarr.cache_clear()
+    monkeypatch.setattr("geotessera.store.GeoTesseraZarr", lambda **kw: _StoreWithYears())  # noqa: ARG005
+    assert get_zarr() is not None
