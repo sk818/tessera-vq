@@ -23,14 +23,17 @@ as [TEE](https://github.com/ucam-eo/TEE), so that the two evolve cleanly.
 
    # serve-ready quantisation for a chosen (t, k, m)
    codebooks, indices, positions = quantize_window_for_serving(
-       mosaic, t=64, k=16, m="cosine",
+       mosaic,
+       t=64,
+       k=16,
+       m="cosine",
    )
    ```
    No server. The CPU spent on the sweep is the caller's.
 
 2. **Plug-compatible client** *(when a server is available)*
    ```python
-   from tessera_vq.client import VQTessera   # drop-in for geotessera.GeoTessera
+   from tessera_vq.client import VQTessera  # drop-in for geotessera.GeoTessera
 
    gt = VQTessera("http://your-host:8000", t=64, k=16, m="cosine")
    mosaic, transform, crs = gt.fetch_mosaic_for_region(bbox, year=2024)
@@ -71,6 +74,7 @@ inside the bolt-on, that's the signal you've crossed the line.
 # parent_service/views.py
 from tessera_vq.client import VQTessera
 from geotessera import GeoTessera
+
 
 @login_required
 def embeddings_view(request):
