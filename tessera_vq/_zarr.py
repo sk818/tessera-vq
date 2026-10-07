@@ -34,19 +34,16 @@ CHUNK_THRESHOLD = 0.2  # deg -- regions larger than this go through the chunked 
 CHUNK_SIZE = 0.1  # deg per chunk
 _ZARR_CACHE_MAX_BYTES = 20 * 1024**3  # bound the on-disk zarr chunk cache
 
-# Temporarily force every embedding read onto the NPY/bbox path, bypassing
-# GeoTesseraZarr entirely. The zarr fast path is currently using a smaller
-# chunk size than intended (Keshav, 2026-09-23) -- same symptom reported
-# independently for tessera-eval's compute server (Moustafa Eweda,
-# forwarded to Anil): the on-disk chunk cache only persists metadata, not
-# the actual tile data, so every read still hits the network regardless of
-# caching. Mirrors tessera-eval's identical _ZARR_DISABLED flag. get_zarr()
-# is the single choke point every caller in this module goes through
-# (data.py's own _USE_ZARR gate, canonical.py, iter_region_windows's
-# hard-require-zarr path) -- disabling it here covers all of them, rather
-# than needing a second flag per call site. Set back to False once
-# geotessera's chunk-size/caching behaviour is confirmed fixed upstream.
-_ZARR_DISABLED = True
+# The Tessera dataset the bolt-on serves. Named explicitly rather than left
+# to geotessera's default, which changes between releases (0.11 made a bare
+# GeoTessera() mean the sparse v1.1-cambridge run). v1.1-dclimate is the
+# wall-to-wall 2017-2025 run, published as Zarr/Icechunk only (no NPY tiles),
+# so every read goes through GeoTesseraZarr. TESSERA_DATASET_VERSION /
+# TESSERA_DATASET_VARIANT override it per deployment.
+DATASET_VERSION = os.environ.get("TESSERA_DATASET_VERSION", "v1.1")
+DATASET_VARIANT = os.environ.get("TESSERA_DATASET_VARIANT") or (
+    "dclimate" if DATASET_VERSION.lstrip("v") == "1.1" else None
+)
 
 
 def _cache_dir() -> Path:
@@ -67,23 +64,27 @@ def _open_zarr() -> Any:
     tiles -- cached either way, so a failed open isn't retried every call.
     """
     try:
+        from geotessera.registry import zarr_store_url  # noqa: PLC0415 (lazy import)
         from geotessera.store import GeoTesseraZarr  # noqa: PLC0415 (lazy: heavy optional import)
 
-        inst = GeoTesseraZarr(cache_dir=str(_cache_dir()), cache_max_size=_ZARR_CACHE_MAX_BYTES)
+        inst = GeoTesseraZarr(
+            store_url=zarr_store_url(DATASET_VERSION, DATASET_VARIANT),
+            cache_dir=str(_cache_dir()),
+            cache_max_size=_ZARR_CACHE_MAX_BYTES,
+        )
         if getattr(inst, "years", None):
             logger.info("GeoTesseraZarr available: %s", inst.url)
             return inst
-        logger.info("zarr store has no tiles; using NPY path")
+        logger.warning("zarr store has no tiles")
         return None
-    except Exception as e:  # noqa: BLE001 -- any failure => NPY fallback
-        logger.info("zarr store unavailable (%s); using NPY path", e)
+    except Exception as e:  # noqa: BLE001 -- reported to callers as None
+        logger.warning("zarr store unavailable: %s", e)
         return None
 
 
 def get_zarr() -> Any:
-    """Cached ``GeoTesseraZarr`` handle, or ``None`` -- callers fall back to NPY."""
-    if _ZARR_DISABLED:
-        return None
+    """Cached ``GeoTesseraZarr`` handle for the served dataset, or ``None`` if
+    the store can't be opened."""
     return _open_zarr()
 
 

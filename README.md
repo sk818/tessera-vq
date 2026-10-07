@@ -32,9 +32,7 @@ from geotessera import GeoTessera
 from tessera_vq.sweep import sweep_window, quantize_window_for_serving
 
 gt = GeoTessera()
-mosaic, transform, crs = gt.fetch_mosaic_for_region(
-    (0.145, 52.045, 0.155, 52.055), year=2024
-)
+mosaic, transform, crs = gt.fetch_mosaic_for_region((0.145, 52.045, 0.155, 52.055), year=2024)
 
 # 1) Explore the rate–distortion frontier on your bbox
 rows = sweep_window(
@@ -46,9 +44,7 @@ rows = sweep_window(
 # rows: one per (t, k, m, subtile) with cosine/L2 reconstruction quantiles
 
 # 2) Produce the compressed representation for the chosen (t, k, m)
-codebooks, indices, positions = quantize_window_for_serving(
-    mosaic, t=64, k=16, m="cosine"
-)
+codebooks, indices, positions = quantize_window_for_serving(mosaic, t=64, k=16, m="cosine")
 # codebooks: (n_tiles, k_eff, 128) float32
 # indices:   (n_tiles, t, t) uint8/16
 # positions: (n_tiles, 2) int32  -- tile (row, col) in the bbox grid
@@ -77,7 +73,7 @@ If you host the optional Flask server on a machine LAN-close to your embeddings
 store, point `VQTessera` at it:
 
 ```python
-from tessera_vq.client import VQTessera   # drop-in for geotessera.GeoTessera
+from tessera_vq.client import VQTessera  # drop-in for geotessera.GeoTessera
 
 # Single-level VQ
 gt = VQTessera("http://your-host:8000", t=64, k=16, m="cosine")

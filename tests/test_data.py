@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pytest
 from affine import Affine
@@ -79,82 +77,35 @@ def test_read_region_zarr_covered_propagates_real_transform(
     np.testing.assert_array_equal(result_mosaic, mosaic)
 
 
-def test_read_region_bbox_path_propagates_real_transform(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """bbox-fallback path: transform comes from ``fetch_mosaic_for_region``, not ``bounds``.
-
-    geotessera's ``fetch_mosaic_for_region`` returns the union of whichever source
-    tiles overlap ``bounds`` (not a ``bounds``-exact crop), so its own transform is
-    the only accurate anchor for what it actually returned.
-    """
-    _patch_zarr_unavailable(monkeypatch)
-    mosaic = np.zeros((20, 30, 128), dtype=np.float32)
-
-    class _Gt:
-        def fetch_mosaic_for_region(
-            self, bounds: Any, year: Any, target_crs: str
-        ) -> tuple[Any, Any, str]:
-            assert target_crs == "EPSG:4326"
-            return mosaic, _REAL_TRANSFORM, "bbox"
-
-    result_mosaic, transform, path = read_region(_BOUNDS, _YEAR, gt=_Gt())
-    assert path == "bbox"
-    assert transform == _REAL_TRANSFORM
-    assert transform.c != _BOUNDS[0] or transform.f != _BOUNDS[3]  # not fabricated from bounds
-    np.testing.assert_array_equal(result_mosaic, mosaic)
-
-
-def test_read_region_falls_back_to_bbox_when_zarr_mosaic_is_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """zarr reports coverage but returns no mosaic -> falls through to the bbox path.
-
-    Guards against a regression where the fallback forgets to also propagate
-    the bbox path's transform once the zarr branch has been entered.
-    """
-    mosaic = np.zeros((20, 30, 128), dtype=np.float32)
+def test_read_region_no_data_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store has nothing for the region -> ``(None, None, "empty")``."""
     monkeypatch.setattr(data.zarr_utils, "get_zarr", _StubGtz)
     monkeypatch.setattr(
         data.zarr_utils,
-        "probe_zarr_coverage",
-        lambda gtz, bounds, year: True,  # noqa: ARG005
+        "read_region_chunked",
+        lambda gtz, bounds, year: (None, None, None),  # noqa: ARG005
     )
+    assert read_region(_BOUNDS, _YEAR) == (None, None, "empty")
+
+
+def test_read_region_all_nan_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read that comes back entirely NaN (e.g. open sea) is treated as empty."""
+    nan = np.full((4, 4, 128), np.nan, dtype=np.float32)
+    monkeypatch.setattr(data.zarr_utils, "get_zarr", _StubGtz)
     monkeypatch.setattr(
         data.zarr_utils,
         "read_region_chunked",
-        lambda gtz, bounds, year: (None, None, "native"),  # noqa: ARG005
+        lambda gtz, bounds, year: (nan, _REAL_TRANSFORM, "EPSG:4326"),  # noqa: ARG005
     )
-
-    class _Gt:
-        def fetch_mosaic_for_region(
-            self,
-            bounds: Any,
-            year: Any,
-            target_crs: str,  # noqa: ARG002
-        ) -> tuple[Any, Any, str]:
-            return mosaic, _REAL_TRANSFORM, "bbox"
-
-    result_mosaic, transform, path = read_region(_BOUNDS, _YEAR, gt=_Gt())
-    assert path == "bbox"
-    assert transform == _REAL_TRANSFORM
-    np.testing.assert_array_equal(result_mosaic, mosaic)
+    assert read_region(_BOUNDS, _YEAR) == (None, None, "empty")
 
 
-def test_read_region_empty_returns_none_transform(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No coverage from either path -> ``(None, None, "empty")``, not a stale transform."""
+def test_read_region_without_a_store_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No silent switch to other data: the served dataset is Zarr-only."""
     _patch_zarr_unavailable(monkeypatch)
+    with pytest.raises(RuntimeError, match="zarr store unavailable"):
+        read_region(_BOUNDS, _YEAR)
 
-    class _Gt:
-        def fetch_mosaic_for_region(
-            self,
-            bounds: Any,
-            year: Any,
-            target_crs: str,  # noqa: ARG002
-        ) -> tuple[None, None, str]:
-            return None, None, "bbox"
 
-    result_mosaic, transform, path = read_region(_BOUNDS, _YEAR, gt=_Gt())
-    assert result_mosaic is None
-    assert transform is None
-    assert path == "empty"
+def test_dataset_version_defaults_to_v1_1() -> None:
+    assert data.get_dataset_version() == "1.1"
