@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-vq"
-version = "0.8.2"
+version = "0.8.3"
 description = "Per-tile vector quantisation of Tessera embeddings: library, optional server, plug-compatible client."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -110,3 +110,15 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=tessera_vq --cov-report=term-missing"
+
+[tool.uv]
+# geotessera 0.11 hard-depends on pcodec and icechunk, whose prebuilt wheels
+# need AVX2. The bolt-on host (michael, Xeon E5-2420, AVX but no AVX2) dies
+# with SIGILL the moment numcodecs auto-imports pcodec. Neither is needed
+# here: the v1.1-dclimate Zarr store is blosc-compressed (pcodec unused) and
+# we read the Zarr copy, not Icechunk. The impossible marker keeps them out of
+# the lock, so neither `uv sync` nor the service's `uv run` installs them.
+override-dependencies = [
+    "pcodec; sys_platform == 'never'",
+    "icechunk; sys_platform == 'never'",
+]
