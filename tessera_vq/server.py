@@ -66,7 +66,7 @@ _KM_PER_DEG_LAT = 111.32
 # the old (tile-dropping) positions/indices for a bbox someone had already requested,
 # defeating the fix for every previously-cached location until this bump forces a
 # recompute (confirmed empirically -- the bug this comment exists to prevent).
-_WIRE_FORMAT = "rvq-int8-gz-3"  # bump if a cached response would no longer be correct
+_WIRE_FORMAT = "rvq-int8-gz-4"  # bump if a cached response would no longer be correct
 _CACHE_DIR = os.environ.get("TESSERA_VQ_CACHE_DIR")
 _CACHE_MAX_GB = float(os.environ.get("TESSERA_VQ_CACHE_MAX_GB", "500"))
 _CACHE: TileCache | None = TileCache(_CACHE_DIR, int(_CACHE_MAX_GB * 1e9)) if _CACHE_DIR else None
@@ -229,6 +229,8 @@ def quantized() -> Response:  # noqa: PLR0911
                 origin=np.asarray(
                     [transform.c, transform.f, transform.a, transform.e], dtype=np.float64
                 ),
+                # Per-pixel validity (see /quantized_rvq's identical field).
+                valid=np.packbits(np.isfinite(mosaic).all(axis=2).ravel()),
             )
             return Response(buf.getvalue(), mimetype="application/octet-stream")
     except _BusyError:
@@ -318,6 +320,10 @@ def quantized_rvq() -> Response:  # noqa: PLR0911
                 origin=np.asarray(
                     [transform.c, transform.f, transform.a, transform.e], dtype=np.float64
                 ),
+                # Per-pixel validity, row-major over (meta H, meta W), bit-packed.
+                # Missing pixels were filled for quantization only; clients
+                # must treat them as gaps (see fill_missing_from_valid).
+                valid=np.packbits(np.isfinite(mosaic).all(axis=2).ravel()),
             )
             return buf.getvalue()
 
@@ -439,44 +445,26 @@ def _no_tiles_message(mosaic_shape: tuple[int, ...], t: int) -> str:
 def _trim_nan_border(
     mosaic: npt.NDArray[np.float32], transform: Any
 ) -> tuple[npt.NDArray[np.float32] | None, Any]:
-    """Peel all-NaN rows/cols off the mosaic edges, shifting the transform origin.
+    """Peel edge rows/cols that have no valid pixel at all, shifting the origin.
 
-    A UTM -> EPSG:4326 reprojection leaves NaN wedges in the grid corners (the
-    rotated source rectangle doesn't fill its 4326 bounding box), so no full
-    t x t tile touching a corner is all-finite. For a viewport-sized region
-    every candidate tile touches a corner -> no tiles at all. Peeling the NaN
-    border back to a clean interior rectangle fixes it (the tiler then clamps t
-    down to the trimmed size).
-
-    Only edge NaN is peeled: a NaN band through the interior would make the peel
-    consume every row/column, so if it collapses, the ORIGINAL window is
-    returned unchanged and the tiler's own all-finite check decides (422). Only
-    a genuinely empty (no finite pixel) window yields (None, None).
+    Only genuinely empty edges are removed. Pixels that are missing inside the
+    kept area -- reprojection corner wedges, or v1.1-dclimate pixels refused for
+    too few cloud-free observations -- stay in the mosaic: the quantizer fills
+    them from valid pixels of the same tile and the response's ``valid`` mask
+    marks them, so clients show them as gaps. (This used to peel any edge
+    row/col with even one missing pixel, which on v1.1 data with scattered gaps
+    shrank a whole viewport to a thin strip.) A window with no valid pixel
+    yields ``(None, None)``.
     """
     from affine import Affine  # noqa: PLC0415 (server-only dep, matches _zarr.py)
 
     finite = np.asarray(np.isfinite(mosaic).all(axis=2))
     if not finite.any():
         return None, None
-    r0, c0 = 0, 0
-    r1, c1 = finite.shape
-    while r0 < r1 and c0 < c1:
-        top = not finite[r0, c0:c1].all()
-        bot = not finite[r1 - 1, c0:c1].all()
-        left = not finite[r0:r1, c0].all()
-        right = not finite[r0:r1, c1 - 1].all()
-        if not (top or bot or left or right):
-            break
-        if top:
-            r0 += 1
-        if bot:
-            r1 -= 1
-        if left:
-            c0 += 1
-        if right:
-            c1 -= 1
-    if r0 >= r1 or c0 >= c1:
-        return mosaic, transform  # interior NaN band -> leave it for the tiler
+    rows = np.flatnonzero(finite.any(axis=1))
+    cols = np.flatnonzero(finite.any(axis=0))
+    r0, r1 = int(rows[0]), int(rows[-1]) + 1
+    c0, c1 = int(cols[0]), int(cols[-1]) + 1
     if (r0, c0, r1, c1) == (0, 0, *finite.shape):
         return mosaic, transform
     return mosaic[r0:r1, c0:c1], transform * Affine.translation(c0, r0)

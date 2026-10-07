@@ -143,6 +143,11 @@ class QuantizedStructure:
     bbox: tuple[float, float, float, float]
     year: int
     origin: tuple[float, float, float, float] | None = None
+    # Per-pixel validity over ``mosaic_shape`` (True = real data). Missing pixels
+    # were filled for quantization only and must be treated as gaps;
+    # :func:`reconstruct_from_structure` sets them to NaN. ``None`` from servers
+    # that predate the field (<0.9.0): every pixel counts as valid.
+    valid: npt.NDArray[np.bool_] | None = None
 
     @property
     def is_rvq(self) -> bool:
@@ -358,6 +363,13 @@ def _structure_from_npz(
             full_h, full_w = int(meta[3]), int(meta[4])
             k2 = None
         origin = tuple(data["origin"].tolist()) if "origin" in data.files else None
+        valid: npt.NDArray[np.bool_] | None = None
+        if "valid" in data.files:
+            valid = (
+                np.unpackbits(data["valid"], count=full_h * full_w)
+                .reshape(full_h, full_w)
+                .astype(bool)
+            )
     return QuantizedStructure(
         codebooks1=cb1,
         indices1=idx1,
@@ -372,6 +384,7 @@ def _structure_from_npz(
         bbox=bbox,
         year=year,
         origin=cast("tuple[float, float, float, float] | None", origin),
+        valid=valid,
     )
 
 
@@ -448,6 +461,8 @@ def reconstruct_from_structure(
             mosaic[row_off : row_off + t, col_off : col_off + t] = struct.codebooks1[i][
                 struct.indices1[i]
             ]
+    if struct.valid is not None:
+        mosaic[~struct.valid] = np.nan  # filled for quantization only -- real gaps
     if bool(np.isnan(mosaic).all()):
         raise NoCoverageError(
             f"reconstructed mosaic is entirely NaN for bbox={struct.bbox} "

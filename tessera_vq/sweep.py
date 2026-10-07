@@ -100,6 +100,33 @@ def reconstruction_quantiles(
     return out
 
 
+def fill_missing_from_valid(
+    tile: npt.NDArray[np.float32], seed: int
+) -> npt.NDArray[np.float32] | None:
+    """``tile`` with its missing (non-finite) pixels replaced by copies of
+    randomly chosen valid pixels from the same tile, or ``None`` if the tile
+    has no valid pixel at all.
+
+    The serving quantizers need a complete tile, but real data has gaps
+    (v1.1-dclimate leaves pixels with too few cloud-free observations empty;
+    reprojection leaves corner wedges). Filling from the tile's own valid
+    pixels keeps the k-means input distribution unchanged -- a constant fill
+    would add a spurious cluster. The filled pixels are never shown: the
+    server ships a per-pixel validity mask and reconstruction turns them back
+    into NaN. Deterministic for a given ``seed``.
+    """
+    valid = np.isfinite(tile).all(axis=-1)
+    if valid.all():
+        return tile
+    if not valid.any():
+        return None
+    out = np.array(tile, dtype=np.float32, copy=True)
+    src = out[valid]
+    rng = np.random.default_rng(seed)
+    out[~valid] = src[rng.integers(0, len(src), size=int((~valid).sum()))]
+    return out
+
+
 def _iterate_subtiles(window: npt.NDArray[np.float32], t: int) -> list[npt.NDArray[np.float32]]:
     """Non-overlapping ``t x t`` sub-tiles of ``window`` that are entirely finite."""
     h, w, _ = window.shape
@@ -147,8 +174,10 @@ def quantize_window_for_serving(
         for col in range(cols):
             col_off = tile_pixel_offset(col, cols, w, t)
             tile = window[row_off : row_off + t, col_off : col_off + t]
-            if not np.isfinite(tile).all():
+            filled = fill_missing_from_valid(tile, seed + r * cols + col)
+            if filled is None:  # no valid pixel in this tile
                 continue
+            tile = filled
             cb, idx = fast_quantize_tile(tile, k, m, seed, sample_size=sample_size)
             cbs.append(cb)
             idxs.append(idx.astype(idx_dtype))
@@ -365,8 +394,9 @@ def rvq_quantize_window_for_serving(
     idx_dtype1: Any = np.uint8 if k1_eff <= 256 else np.uint16  # noqa: PLR2004
     idx_dtype2: Any = np.uint8 if k2_eff <= 256 else np.uint16  # noqa: PLR2004
 
-    # Cheap sequential pass: pick out the all-finite tiles and their grid
-    # positions. The expensive part (RVQ quantization) happens below, in
+    # Cheap sequential pass: pick out the tiles with any valid pixel (gaps
+    # filled -- see fill_missing_from_valid) and their grid positions. The
+    # expensive part (RVQ quantization) happens below, in
     # parallel, over just this filtered set.
     items: list[tuple[tuple[int, int], npt.NDArray[np.float32]]] = []
     for r in range(rows):
@@ -374,9 +404,10 @@ def rvq_quantize_window_for_serving(
         for col in range(cols):
             col_off = tile_pixel_offset(col, cols, w, t)
             tile = window[row_off : row_off + t, col_off : col_off + t]
-            if not np.isfinite(tile).all():
+            filled = fill_missing_from_valid(tile, seed + r * cols + col)
+            if filled is None:  # no valid pixel in this tile
                 continue
-            items.append(((r, col), np.asarray(tile, dtype=np.float32)))
+            items.append(((r, col), np.asarray(filled, dtype=np.float32)))
 
     if not items:
         return (

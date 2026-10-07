@@ -9,6 +9,7 @@ import urllib.error
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from affine import Affine
 
@@ -30,6 +31,7 @@ def _make_npz(
     full_w: int = 48,
     positions: list[tuple[int, int]] | None = None,
     origin: tuple[float, float, float, float] | None = None,
+    valid: npt.NDArray[np.bool_] | None = None,
 ) -> bytes:
     """Build an NPZ matching the bolt-on's /quantized payload shape.
 
@@ -54,6 +56,8 @@ def _make_npz(
     }
     if origin is not None:
         arrays["origin"] = np.asarray(origin, dtype=np.float64)
+    if valid is not None:
+        arrays["valid"] = np.packbits(valid.ravel())
     buf = io.BytesIO()
     np.savez(buf, **arrays)
     return buf.getvalue()
@@ -420,3 +424,22 @@ def test_fetch_mosaic_for_region_raises_on_server_422(
     gt = VQTessera(server_url="http://test", t=256, k=4, k2=4)
     with pytest.raises(NoCoverageError):
         gt.fetch_mosaic_for_region((0.0, 50.0, 0.001, 50.001))
+
+
+def test_reconstruct_turns_masked_pixels_back_into_gaps() -> None:
+    """Pixels the server marked invalid were filled for quantization only; the
+    reconstruction must show them as NaN, and everything else unchanged."""
+    valid = np.ones((32, 48), dtype=bool)
+    valid[3, 5] = False
+    valid[20:22, 40:48] = False
+    bbox = (0.0, 50.0, 0.1, 50.05)
+    masked, _, _ = _reconstruct(_make_npz(valid=valid), bbox)
+    plain, _, _ = _reconstruct(_make_npz(), bbox)
+    assert np.isnan(masked[~valid]).all()
+    np.testing.assert_array_equal(masked[valid], plain[valid])
+
+
+def test_reconstruct_without_a_mask_keeps_every_pixel() -> None:
+    """Older servers send no mask: every pixel counts as valid."""
+    mosaic, _, _ = _reconstruct(_make_npz(), (0.0, 50.0, 0.1, 50.05))
+    assert np.isfinite(mosaic).all()
