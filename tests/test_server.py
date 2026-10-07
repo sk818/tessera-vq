@@ -15,6 +15,7 @@ from affine import Affine
 from tessera_vq import _zarr, server
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
+from tessera_vq.sweep import fill_missing_from_valid
 from tessera_vq.tile_cache import TileCache
 
 
@@ -129,22 +130,14 @@ def test_quantized_rvq_clamps_t_to_a_window_smaller_than_t(
         assert data["indices1"].shape == (1, 10, 10)
 
 
-def test_quantized_rvq_returns_422_when_all_candidate_tiles_have_nan(
+def test_quantized_rvq_serves_nan_cut_tiles_with_a_validity_mask(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RVQ also 422s when candidate tiles exist dimensionally but every one is NaN-cut.
-
-    Regression for the original bug report: Cambridge-shape reprojected window where
-    the source's UTM-to-EPSG:4326 reprojection introduced NaN strips that cut every
-    candidate tile. Old behaviour: silent ``n_tiles=0`` NPZ. New behaviour: 422.
-
-    The NaN band here (columns 200-400) is wider than the original bug report's --
-    with t=256 tiling now covering the last row/column via a pulled-back tile
-    (tile_pixel_offset; see tessera_vq.sweep), the candidate columns are
-    [0,256), [256,512) AND [347,603), and a strip has to reach from inside the
-    first into inside the third to defeat all three (a narrower strip no longer
-    can -- see test_quantized_rvq_succeeds_when_edge_tile_dodges_a_narrow_nan_strip
-    directly below, which is now a *positive* control instead).
+    """A NaN band cutting every candidate tile used to 422 (and before that, a
+    silent ``n_tiles=0``). Since 0.9.0 tiles with any valid pixel are served --
+    their gaps filled for quantization only -- and the response's ``valid``
+    mask marks the band, so clients show it as missing data rather than losing
+    the whole window (v1.1-dclimate has real scattered gaps).
     """
     rng = np.random.default_rng(0)
     window = rng.standard_normal((398, 603, 128)).astype(np.float32)
@@ -155,9 +148,14 @@ def test_quantized_rvq_returns_422_when_all_candidate_tiles_have_nan(
         "/quantized_rvq",
         json={"bbox": [0.1025, 52.1751, 0.1758, 52.22], "t": 256, "k1": 256, "k2": 256},
     )
-    assert resp.status_code == 422
-    body = resp.get_json()
-    assert "t=256" in body["error"]
+    assert resp.status_code == 200, resp.get_json()
+    with np.load(io.BytesIO(resp.data)) as data:
+        assert data["positions"].shape[0] >= 1
+        h, w = int(data["meta"][4]), int(data["meta"][5])
+        valid = np.unpackbits(data["valid"], count=h * w).reshape(h, w).astype(bool)
+    assert (h, w) == (398, 603)
+    assert not valid[:, 200:400].any()
+    assert valid[:, :200].all() and valid[:, 400:].all()
 
 
 def test_quantized_rvq_succeeds_when_edge_tile_dodges_a_narrow_nan_strip(
@@ -192,8 +190,9 @@ def test_quantized_rvq_trims_reprojection_nan_corners_and_serves(
 ) -> None:
     """The original bug: a ~viewport-sized zarr mosaic with triangular NaN
     wedges in its corners (UTM->4326 reprojection) had no all-finite t=512
-    tile, so viewport creation 422'd. Now the NaN border is peeled to a clean
-    interior and the tile is served at a clamped t.
+    tile, so viewport creation 422'd. The corners used to be peeled away
+    (shrinking t); since 0.9.0 they stay, masked as missing, and the tile is
+    served at full size.
     """
     rng = np.random.default_rng(0)
     h, w = 520, 521
@@ -214,8 +213,37 @@ def test_quantized_rvq_trims_reprojection_nan_corners_and_serves(
     with np.load(io.BytesIO(resp.data)) as data:
         assert data["positions"].shape[0] >= 1
         t_eff = int(data["meta"][0])
-        assert t_eff < 512  # clamped below the trimmed interior
+        assert t_eff == 512  # nothing peeled: the edges are only partly missing
         assert data["indices1"].shape[1] == t_eff
+        hh, ww = int(data["meta"][4]), int(data["meta"][5])
+        valid = np.unpackbits(data["valid"], count=hh * ww).reshape(hh, ww).astype(bool)
+    assert (hh, ww) == (h, w)
+    assert not valid[0, 0] and not valid[-1, -1]  # corner wedges marked missing
+    assert valid[h // 2, w // 2]
+
+
+def test_trim_peels_only_completely_empty_edges() -> None:
+    m = np.ones((10, 12, 4), dtype=np.float32)
+    m[:2] = np.nan  # two empty top rows -> peeled
+    m[:, -3:] = np.nan  # three empty right cols -> peeled
+    m[5, 4] = np.nan  # an interior gap -> kept
+    m[9, 0] = np.nan  # a partly-missing edge row -> kept
+    out, tr = server._trim_nan_border(m, Affine(1, 0, 0, 0, -1, 0))
+    assert out is not None and out.shape[:2] == (8, 9)
+    assert tr.f == -2  # origin moved down two rows
+    assert np.isnan(out[3, 4]).all()
+
+
+def test_fill_missing_from_valid_uses_the_tiles_own_pixels() -> None:
+    tile = np.arange(4 * 4 * 2, dtype=np.float32).reshape(4, 4, 2)
+    tile[1, 1] = np.nan
+    tile[2, 3] = np.nan
+    filled = fill_missing_from_valid(tile, seed=7)
+    assert filled is not None and np.isfinite(filled).all()
+    valid_rows = {tuple(v) for v in tile[np.isfinite(tile).all(-1)]}
+    assert tuple(filled[1, 1]) in valid_rows and tuple(filled[2, 3]) in valid_rows
+    np.testing.assert_array_equal(filled, fill_missing_from_valid(tile, seed=7))  # seeded
+    assert fill_missing_from_valid(np.full((2, 2, 2), np.nan, np.float32), seed=0) is None
 
 
 def test_quantized_succeeds_when_tiles_fit(monkeypatch: pytest.MonkeyPatch) -> None:
