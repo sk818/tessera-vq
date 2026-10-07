@@ -116,24 +116,19 @@ def test_read_canonical_window_unpacks_real_read_region_three_tuple(
     ``ValueError: too many/not enough values to unpack`` here instead of only being
     caught by test_data.py's tests of read_region in isolation.
 
-    Only the geotessera client several layers down is stubbed; canonical.py's own
+    Only the zarr region read several layers down is stubbed; canonical.py's own
     ``read_canonical_window`` and ``data.read_region`` both run unmodified.
     """
-    _patch_zarr(monkeypatch, available=False)
     fake = np.zeros((100, 100, 128), dtype=np.float32)
     real_transform = Affine(0.00009, 0.0, -0.014, 0.0, -0.00009, 50.081)
-
-    class _Gt:
-        def fetch_mosaic_for_region(
-            self,
-            bounds: Any,
-            year: Any,
-            target_crs: str,  # noqa: ARG002
-        ) -> tuple[Any, Any, str]:
-            assert target_crs == "EPSG:4326"
-            return fake, real_transform, "bbox"
-
-    monkeypatch.setattr("tessera_vq.data.get_geotessera", _Gt)
+    # Store available, but the native-window probe says no -> the region-read path.
+    monkeypatch.setattr(canonical.zarr_utils, "get_zarr", object)
+    monkeypatch.setattr(canonical.zarr_utils, "probe_zarr_coverage", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        canonical.zarr_utils,
+        "read_region_chunked",
+        lambda gtz, bounds, year: (fake, real_transform, "EPSG:4326"),  # noqa: ARG005
+    )
     b = CanonicalBbox(name="x", lon=22.05, lat=-1.05, biome="x", continent="AF")
     mosaic, path = read_canonical_window(b, 2024)
     assert mosaic is not None

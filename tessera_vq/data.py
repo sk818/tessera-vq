@@ -66,8 +66,8 @@ def _normalize_dataset_version(spec: str) -> str:
 
 
 def get_dataset_version() -> str:
-    """The resolved Tessera dataset version (e.g. "1.0", "1.1") this process serves."""
-    return _normalize_dataset_version(get_geotessera().dataset_version)
+    """The Tessera dataset version (e.g. "1.1") this process serves."""
+    return _normalize_dataset_version(zarr_utils.DATASET_VERSION)
 
 
 @lru_cache(maxsize=4)
@@ -88,36 +88,22 @@ def sample_window_locations(n: int, year: int, seed: int) -> npt.NDArray[np.floa
     return centers[idx]
 
 
-# Zarr fast path. Disabled 2026-08-14 (truncated byte-range reads + an
-# unfinished non-2024-year rollout + a UTM-zone-boundary bug) and routed
-# through the external tessera-zarr-utils package. Re-enabled 2026-08-30:
-# geotessera 0.10.1 serves every published year on native UTM grids and
-# fixes the zone-boundary bug, so the reads go through GeoTesseraZarr
-# directly (see tessera_vq._zarr) with a 20 GiB on-disk chunk cache. Cold,
-# it is ~8x faster than fetch_mosaic_for_region on a viewport-sized region
-# and streams ~1 MB of chunks instead of downloading 100-400 MB of whole
-# tiles. get_zarr() returns None on any open failure -> read_region falls
-# back to the npy path exactly as before.
-_USE_ZARR = True
-
-
 def read_region(
     bounds: tuple[float, float, float, float],
     year: int,
     *,
     gtz: Any = None,
-    gt: Any = None,
+    gt: Any = None,  # noqa: ARG001 -- kept for callers; the NPY path is gone
 ) -> tuple[npt.NDArray[np.float32] | None, Any, str]:
-    """Read ``(H, W, 128)`` float32 EPSG:4326 for ``bounds``; zarr if covered, else bbox.
+    """Read ``(H, W, 128)`` float32 EPSG:4326 for ``bounds`` from the zarr store.
 
     Returns ``(mosaic_or_None, transform_or_None, path)`` with ``path`` in
-    ``{"zarr", "bbox", "empty"}`` (``"zarr"`` currently unreachable -- see
-    ``_USE_ZARR``). ``transform`` is the ``affine.Affine`` mapping pixel
-    ``(row, col)`` -> ``(lon, lat)`` for the *returned* mosaic. Both paths
-    can return more ground than ``bounds`` asked for -- the zarr multi-chunk
-    path via reprojection/chunk-grid edges, the bbox path because geotessera's
-    ``fetch_mosaic_for_region`` returns the union of whichever source tiles
-    overlap ``bounds``, not a ``bounds``-exact crop -- so callers that need an
+    ``{"zarr", "empty"}``. The served dataset (v1.1-dclimate by default, see
+    ``tessera_vq._zarr``) is Zarr-only, so there is no NPY fallback; an
+    unavailable store is an error rather than a silent switch to other data.
+    ``transform`` is the ``affine.Affine`` mapping pixel ``(row, col)`` ->
+    ``(lon, lat)`` for the *returned* mosaic, which can cover more ground than
+    ``bounds`` (reprojection / chunk-grid edges), so callers that need an
     exact crop to ``bounds`` must derive it from this transform. (This used to
     be discarded here entirely, forcing ``reconstruct_from_structure`` to
     *fabricate* an anchor -- assuming the mosaic started at ``bounds``'s own
@@ -125,17 +111,18 @@ def read_region(
     several km. Propagating the real transform through the bolt-on wire
     format is what fixes that; see ``QuantizedStructure.origin``.)
     """
-    if _USE_ZARR:
-        gtz = zarr_utils.get_zarr() if gtz is None else gtz
-        if gtz is not None and zarr_utils.probe_zarr_coverage(gtz, bounds, year):
-            mosaic, transform, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
-            if mosaic is not None:
-                return np.asarray(mosaic, dtype=np.float32), transform, "zarr"
-    gt = get_geotessera() if gt is None else gt
-    mosaic, transform, _ = gt.fetch_mosaic_for_region(bounds, year=year, target_crs="EPSG:4326")
+    gtz = zarr_utils.get_zarr() if gtz is None else gtz
+    if gtz is None:
+        raise RuntimeError("Tessera zarr store unavailable")
+    # No centre-pixel coverage probe: it reads "no coverage" whenever the bbox
+    # centre is over water. Read the region and judge by what comes back.
+    mosaic, transform, _ = zarr_utils.read_region_chunked(gtz, bounds, year)
     if mosaic is None:
         return None, None, "empty"
-    return np.asarray(mosaic, dtype=np.float32), transform, "bbox"
+    mosaic = np.asarray(mosaic, dtype=np.float32)
+    if not np.isfinite(mosaic).any():
+        return None, None, "empty"
+    return mosaic, transform, "zarr"
 
 
 def _finite_pixels(mosaic: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:

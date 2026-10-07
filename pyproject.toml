@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-vq"
-version = "0.7.5"
+version = "0.8.0"
 description = "Per-tile vector quantisation of Tessera embeddings: library, optional server, plug-compatible client."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -44,7 +44,7 @@ server = [
     # tessera_vq/_zarr.py) -- the external tessera-zarr-utils package existed
     # only to work around bugs 0.10.1 fixes, so it's dropped. Ships zarr/xarray/
     # obstore in the base wheel; no extra needed.
-    "geotessera>=0.10.1",
+    "geotessera>=0.11.0",
 ]
 # Large-scale parameter sweeps + analysis (tessera_vq.sweep, UK isotropy
 # scripts, parquet-with-provenance outputs). Pulls server bits transitively.

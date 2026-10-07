@@ -121,36 +121,22 @@ def test_read_region_chunked_no_data_returns_none() -> None:
     assert read_region_chunked(Empty(), (2.3, 48.8, 2.5, 49.0), 2024) == (None, None, None)
 
 
-def test_get_zarr_disabled_returns_none_without_even_trying_to_connect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The current production default (_ZARR_DISABLED=True, see its own
-    module comment -- the zarr fast path's chunk-size/caching bug means
-    every read hits the network regardless). get_zarr() must short-circuit
-    before ever opening the store, not just happen to return None."""
-    monkeypatch.setattr(zarr_mod, "_ZARR_DISABLED", True)
-    zarr_mod._open_zarr.cache_clear()
-    calls: list[Any] = []
-
-    def _make(**kw: Any) -> FakeZarr:
-        calls.append(kw)
-        return FakeZarr()
-
-    monkeypatch.setattr("geotessera.store.GeoTesseraZarr", _make)
-    assert get_zarr() is None
-    assert calls == [], "disabled zarr must not even attempt to open the store"
-
-
-def test_get_zarr_enabled_still_opens_the_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The flip side of the disabled test above -- with _ZARR_DISABLED
-    False (re-enabled once the upstream bug is fixed), get_zarr() must
-    still reach the real open/cache logic in _open_zarr()."""
+def test_get_zarr_opens_the_v1_1_dclimate_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bolt-on names its dataset explicitly (geotessera's default changes
+    between releases) and opens it through GeoTesseraZarr."""
 
     class _StoreWithYears(FakeZarr):
         years = [2024, 2025]  # _open_zarr() only keeps a store with tiles
         url = "fake://store"  # _open_zarr() logs this on success
 
-    monkeypatch.setattr(zarr_mod, "_ZARR_DISABLED", False)
+    calls: list[Any] = []
+
+    def _make(**kw: Any) -> FakeZarr:
+        calls.append(kw)
+        return _StoreWithYears()
+
     zarr_mod._open_zarr.cache_clear()
-    monkeypatch.setattr("geotessera.store.GeoTesseraZarr", lambda **kw: _StoreWithYears())  # noqa: ARG005
+    monkeypatch.setattr("geotessera.store.GeoTesseraZarr", _make)
     assert get_zarr() is not None
+    assert calls and calls[0]["store_url"].rstrip("/").endswith("v1.1-dclimate")
+    zarr_mod._open_zarr.cache_clear()
