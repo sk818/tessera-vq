@@ -12,7 +12,7 @@ import numpy.typing as npt
 import pytest
 from affine import Affine
 
-from tessera_vq import server
+from tessera_vq import _zarr, server
 from tessera_vq.codebook_codec import dequantize_codebook_uint8
 from tessera_vq.server import _bbox_size_km, _check_bbox_size, _no_tiles_message
 from tessera_vq.tile_cache import TileCache
@@ -361,3 +361,17 @@ def test_quantized_rvq_429_when_compute_slots_exhausted(monkeypatch: pytest.Monk
     assert resp.status_code == 429  # noqa: PLR2004
     assert resp.headers.get("Retry-After") == "2"
     sem.release()
+
+
+def test_cache_key_includes_the_served_dataset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The response cache is durable: a result computed from one dataset must
+    not be served after the bolt-on switches to another."""
+    args = ((0.0, 50.0, 0.1, 50.05), 2024, 512, 20, 256, "cosine", 10000, 42)
+    monkeypatch.setattr(_zarr, "DATASET_VERSION", "v1.0")
+    monkeypatch.setattr(_zarr, "DATASET_VARIANT", None)
+    v10 = server._rvq_cache_key(*args)
+    monkeypatch.setattr(_zarr, "DATASET_VERSION", "v1.1")
+    monkeypatch.setattr(_zarr, "DATASET_VARIANT", "dclimate")
+    v11 = server._rvq_cache_key(*args)
+    assert v10 != v11
+    assert "v1.1-dclimate" in v11
