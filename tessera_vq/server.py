@@ -38,6 +38,7 @@ import numpy as np
 import numpy.typing as npt
 from flask import Flask, Response, jsonify, request
 
+from tessera_vq import _zarr as zarr_utils
 from tessera_vq.codebook_codec import quantize_codebook_uint8
 from tessera_vq.data import get_dataset_version, read_region
 from tessera_vq.sweep import (
@@ -137,9 +138,15 @@ def _compute_slot() -> Iterator[None]:
 def _rvq_cache_key(
     bbox: tuple[float, ...], year: int, t: int, k1: int, k2: int, m: str, ssz: int, seed: int
 ) -> str:
-    """Canonical cache key; bbox rounded to ~0.1 m to absorb float jitter."""
+    """Canonical cache key; bbox rounded to ~0.1 m to absorb float jitter.
+
+    Includes the served dataset (version + variant): the cache is durable,
+    so without it a response computed from one dataset (e.g. v1.0) would be
+    served again after the bolt-on switched to another (v1.1-dclimate).
+    """
     b = ",".join(f"{v:.6f}" for v in bbox)
-    return f"{_WIRE_FORMAT}|{b}|{year}|{t}|{k1}|{k2}|{m}|{ssz}|{seed}"
+    ds = f"{zarr_utils.DATASET_VERSION}-{zarr_utils.DATASET_VARIANT}"
+    return f"{_WIRE_FORMAT}|{ds}|{b}|{year}|{t}|{k1}|{k2}|{m}|{ssz}|{seed}"
 
 
 app = Flask("tessera_vq")
