@@ -21,6 +21,9 @@
 # run tells you whether the sweep is meaningful globally, not just within one
 # biome. HALT after the pilot for supervisor review before the remaining 95.
 
+# Revised 2026-10-13: 34 boxes moved or renamed after a location and land-cover
+# check (ocean boxes, towns, wrong country, biome mismatches).
+
 version: 1
 created_utc: "2026-06-02"
 seed_default: 42
@@ -29,7 +32,7 @@ bboxes:
   # ------------------------------------------------------------------------
   # PILOT 5 - one per continent, diverse biomes. HALT after these are run.
   # ------------------------------------------------------------------------
-  - {name: "Amazon (Manaus, BR)",          lon:  -59.95, lat:  -3.05, biome: rainforest, continent: SA}
+  - {name: "Amazon (ZF2 reserve, BR)",     lon:  -60.25, lat:  -2.65, biome: rainforest, continent: SA}
   - {name: "Sahel (Sudan)",                lon:   29.05, lat:  13.05, biome: savanna,    continent: AF}
   - {name: "UK pastoral (Wales)",          lon:   -3.05, lat:  52.05, biome: pastoral,   continent: EU}
   - {name: "US Iowa cropland",             lon:  -93.05, lat:  42.05, biome: cropland,   continent: NA}
@@ -41,14 +44,14 @@ bboxes:
   - {name: "Amazon south (Acre, BR)",      lon:  -69.05, lat: -10.05, biome: rainforest, continent: SA}
   - {name: "Amazon east (Para, BR)",       lon:  -50.05, lat:  -2.05, biome: rainforest, continent: SA}
   - {name: "Atlantic forest (Bahia, BR)",  lon:  -39.05, lat: -14.05, biome: rainforest, continent: SA}
-  - {name: "Congo (Gabon)",                lon:   22.05, lat:  -1.05, biome: rainforest, continent: AF}
+  - {name: "Congo (Ivindo NP, Gabon)",     lon:   12.55, lat:  -0.15, biome: rainforest, continent: AF}
   - {name: "Congo east (DR Congo)",        lon:   28.05, lat:  -1.05, biome: rainforest, continent: AF}
   - {name: "Borneo central (ID)",          lon:  114.05, lat:   0.05, biome: rainforest, continent: AS}
   - {name: "Sumatra (ID)",                 lon:  101.05, lat:  -1.05, biome: rainforest, continent: AS}
   - {name: "New Guinea (Papua, ID)",       lon:  139.05, lat:  -5.05, biome: rainforest, continent: OC}
-  - {name: "Cambodia rainforest",          lon:  105.05, lat:  13.05, biome: rainforest, continent: AS}
-  - {name: "Madagascar east",              lon:   48.05, lat: -19.05, biome: rainforest, continent: AF}
-  - {name: "Costa Rica rainforest",        lon:  -83.05, lat:   9.05, biome: rainforest, continent: NA}
+  - {name: "Cambodia (Central Cardamoms)", lon:  103.45, lat:  11.85, biome: rainforest, continent: AS}
+  - {name: "Madagascar east (Andasibe-Mantadia)", lon:   48.45, lat: -18.85, biome: rainforest, continent: AF}
+  - {name: "Costa Rica (Corcovado)",       lon:  -83.55, lat:   8.55, biome: rainforest, continent: NA}
 
   # ------------------------------------------------------------------------
   # BOREAL / TAIGA (12)
@@ -60,37 +63,37 @@ bboxes:
   - {name: "Northern Quebec",               lon:  -72.05, lat:  53.05, biome: boreal,    continent: NA}
   - {name: "Northern Ontario",              lon:  -87.05, lat:  51.05, biome: boreal,    continent: NA}
   - {name: "Alberta boreal",                lon: -115.05, lat:  56.05, biome: boreal,    continent: NA}
-  - {name: "Swedish Lapland",               lon:   17.05, lat:  66.05, biome: boreal,    continent: EU}
+  - {name: "Swedish Lapland",               lon:   19.05, lat:  66.05, biome: boreal,    continent: EU}
   - {name: "Central Finland",               lon:   26.05, lat:  63.05, biome: boreal,    continent: EU}
   - {name: "Norway interior",               lon:   12.05, lat:  61.05, biome: boreal,    continent: EU}
-  - {name: "Russian Far East",              lon:  140.05, lat:  58.05, biome: boreal,    continent: AS}
+  - {name: "Russian Far East",              lon:  140.25, lat:  58.05, biome: boreal,    continent: AS}
   - {name: "Alaska interior",               lon: -148.05, lat:  64.05, biome: boreal,    continent: NA}
 
   # ------------------------------------------------------------------------
   # TEMPERATE DECIDUOUS (10)
   # ------------------------------------------------------------------------
-  - {name: "Appalachian (Virginia)",       lon:  -80.05, lat:  38.05, biome: temperate_deciduous, continent: NA}
-  - {name: "New England (Vermont)",        lon:  -72.05, lat:  43.05, biome: temperate_deciduous, continent: NA}
+  - {name: "Appalachian (West Virginia)",  lon:  -80.05, lat:  38.05, biome: temperate_deciduous, continent: NA}
+  - {name: "New England (Vermont)",        lon:  -72.85, lat:  43.05, biome: temperate_deciduous, continent: NA}
   - {name: "Great Lakes (Michigan)",       lon:  -85.05, lat:  44.05, biome: temperate_deciduous, continent: NA}
-  - {name: "Germany lowlands",             lon:   10.05, lat:  51.05, biome: temperate_deciduous, continent: EU}
-  - {name: "Polish lowlands",              lon:   20.05, lat:  52.05, biome: temperate_deciduous, continent: EU}
+  - {name: "Hainich NP (Germany)",         lon:   10.45, lat:  51.05, biome: temperate_deciduous, continent: EU}
+  - {name: "Białowieża Forest (PL)",       lon:   23.75, lat:  52.75, biome: temperate_deciduous, continent: EU}
   - {name: "NE China (Heilongjiang)",      lon:  128.05, lat:  47.05, biome: temperate_deciduous, continent: AS}
-  - {name: "South Korea inland",           lon:  128.05, lat:  37.05, biome: temperate_deciduous, continent: AS}
+  - {name: "South Korea (Odaesan NP)",     lon:  128.55, lat:  37.75, biome: temperate_deciduous, continent: AS}
   - {name: "Honshu (Japan)",               lon:  139.05, lat:  37.05, biome: temperate_deciduous, continent: AS}
   - {name: "Transylvania (Romania)",       lon:   25.05, lat:  46.05, biome: temperate_deciduous, continent: EU}
-  - {name: "Hungary plains",               lon:   19.05, lat:  47.05, biome: temperate_deciduous, continent: EU}
+  - {name: "Bükk (Hungary)",               lon:   20.45, lat:  48.05, biome: temperate_deciduous, continent: EU}
 
   # ------------------------------------------------------------------------
   # TEMPERATE EVERGREEN (8)
   # ------------------------------------------------------------------------
-  - {name: "Pacific NW (Oregon)",          lon: -123.05, lat:  44.05, biome: temperate_evergreen, continent: NA}
-  - {name: "Coast Range (Washington)",     lon: -122.05, lat:  47.05, biome: temperate_evergreen, continent: NA}
-  - {name: "South Island NZ",              lon:  170.05, lat: -43.05, biome: temperate_evergreen, continent: OC}
+  - {name: "Pacific NW (H.J. Andrews, OR)", lon: -122.25, lat:  44.25, biome: temperate_evergreen, continent: NA}
+  - {name: "Coast Range (Willapa Hills, WA)", lon: -123.45, lat:  46.55, biome: temperate_evergreen, continent: NA}
+  - {name: "Westland (Ōkārito forest, NZ)", lon:  170.25, lat: -43.25, biome: temperate_evergreen, continent: OC}
   - {name: "Chilean Patagonia",            lon:  -72.05, lat: -42.05, biome: temperate_evergreen, continent: SA}
   - {name: "Tasmania (W)",                 lon:  146.05, lat: -42.05, biome: temperate_evergreen, continent: OC}
-  - {name: "Scotland highlands",           lon:   -4.05, lat:  57.05, biome: temperate_evergreen, continent: EU}
+  - {name: "Abernethy pinewood (Scotland)", lon:   -3.65, lat:  57.25, biome: temperate_evergreen, continent: EU}
   - {name: "Galicia (Spain)",              lon:   -8.05, lat:  43.05, biome: temperate_evergreen, continent: EU}
-  - {name: "Vancouver Island",             lon: -126.05, lat:  49.05, biome: temperate_evergreen, continent: NA}
+  - {name: "Vancouver Island (Clayoquot interior)", lon: -125.55, lat:  49.35, biome: temperate_evergreen, continent: NA}
 
   # ------------------------------------------------------------------------
   # SAVANNA / TROPICAL GRASSLAND (10)
@@ -102,8 +105,8 @@ bboxes:
   - {name: "Llanos (Venezuela)",           lon:  -67.05, lat:   7.05, biome: savanna,             continent: SA}
   - {name: "Australia N savanna (NT)",     lon:  133.05, lat: -14.05, biome: savanna,             continent: OC}
   - {name: "Zambia savanna",               lon:   28.05, lat: -14.05, biome: savanna,             continent: AF}
-  - {name: "India Deccan",                 lon:   78.05, lat:  17.05, biome: savanna,             continent: AS}
-  - {name: "NE Brazil caatinga",           lon:  -39.05, lat:  -8.05, biome: savanna,             continent: SA}
+  - {name: "India (Amrabad, Nallamala)",   lon:   78.85, lat:  16.35, biome: savanna,             continent: AS}
+  - {name: "NE Brazil caatinga",           lon:  -38.95, lat:  -8.05, biome: savanna,             continent: SA}
 
   # ------------------------------------------------------------------------
   # DESERT / SEMI-ARID (7 more, total 8 with pilot Australia outback)
@@ -114,7 +117,7 @@ bboxes:
   - {name: "Mongolia Gobi",                lon:  105.05, lat:  43.05, biome: desert,              continent: AS}
   - {name: "Atacama edge (Chile)",         lon:  -69.05, lat: -23.05, biome: desert,              continent: SA}
   - {name: "Iran central",                 lon:   54.05, lat:  33.05, biome: desert,              continent: AS}
-  - {name: "Namibia",                      lon:   16.05, lat: -23.05, biome: desert,              continent: AF}
+  - {name: "Namib dune sea (Namibia)",     lon:   15.25, lat: -24.25, biome: desert,              continent: AF}
 
   # ------------------------------------------------------------------------
   # CROPLAND (11 more, total 12 with pilot US Iowa)
@@ -124,39 +127,39 @@ bboxes:
   - {name: "Indian Ganges plain",          lon:   82.05, lat:  26.05, biome: cropland,            continent: AS}
   - {name: "Ukrainian Black Earth",        lon:   32.05, lat:  49.05, biome: cropland,            continent: EU}
   - {name: "Russian Volga cropland",       lon:   45.05, lat:  52.05, biome: cropland,            continent: EU}
-  - {name: "NE China (Liaoning)",          lon:  123.05, lat:  41.05, biome: cropland,            continent: AS}
+  - {name: "NE China (Liao River plain)",  lon:  122.55, lat:  41.75, biome: cropland,            continent: AS}
   - {name: "North China Plain",            lon:  115.05, lat:  35.05, biome: cropland,            continent: AS}
   - {name: "Argentine Pampas",             lon:  -62.05, lat: -35.05, biome: cropland,            continent: SA}
   - {name: "Brazil soy (Mato Grosso)",     lon:  -54.05, lat: -12.05, biome: cropland,            continent: SA}
-  - {name: "France Beauce",                lon:    1.05, lat:  48.05, biome: cropland,            continent: EU}
+  - {name: "France Beauce",                lon:    1.65, lat:  48.25, biome: cropland,            continent: EU}
   - {name: "UK East Anglia",               lon:    0.05, lat:  52.05, biome: cropland,            continent: EU}
 
   # ------------------------------------------------------------------------
   # PASTORAL / TEMPERATE GRASSLAND (7 more, total 8 with pilot UK pastoral)
   # ------------------------------------------------------------------------
-  - {name: "NZ pastoral (N Island)",       lon:  175.05, lat: -39.05, biome: pastoral,            continent: OC}
+  - {name: "NZ pastoral (Rangitīkei)",     lon:  175.55, lat: -39.75, biome: pastoral,            continent: OC}
   - {name: "Patagonia steppe",             lon:  -69.05, lat: -45.05, biome: pastoral,            continent: SA}
   - {name: "Mongolia plateau",             lon:  105.05, lat:  47.05, biome: pastoral,            continent: AS}
   - {name: "Kazakhstan steppe",            lon:   68.05, lat:  50.05, biome: pastoral,            continent: AS}
   - {name: "US Great Plains",              lon: -100.05, lat:  44.05, biome: pastoral,            continent: NA}
   - {name: "Australia sheep (NSW)",        lon:  146.05, lat: -33.05, biome: pastoral,            continent: OC}
-  - {name: "Russian steppe",               lon:   50.05, lat:  51.05, biome: pastoral,            continent: EU}
+  - {name: "West Kazakhstan steppe",       lon:   50.05, lat:  51.05, biome: pastoral,            continent: EU}
 
   # ------------------------------------------------------------------------
   # MEDITERRANEAN (5)
   # ------------------------------------------------------------------------
-  - {name: "California Central Valley",    lon: -120.05, lat:  36.05, biome: mediterranean,       continent: NA}
+  - {name: "California (Figueroa Mtn chaparral)", lon: -120.05, lat:  34.75, biome: mediterranean,       continent: NA}
   - {name: "Greek mainland",               lon:   22.05, lat:  39.05, biome: mediterranean,       continent: EU}
   - {name: "S Africa Western Cape",        lon:   19.05, lat: -33.05, biome: mediterranean,       continent: AF}
-  - {name: "SW Australia",                 lon:  117.05, lat: -33.05, biome: mediterranean,       continent: OC}
+  - {name: "SW Australia (jarrah forest)", lon:  116.15, lat: -32.75, biome: mediterranean,       continent: OC}
   - {name: "Central Chile",                lon:  -71.05, lat: -34.05, biome: mediterranean,       continent: SA}
 
   # ------------------------------------------------------------------------
   # MONTANE / ALPINE (5)
   # ------------------------------------------------------------------------
-  - {name: "Swiss Alps",                   lon:    8.05, lat:  46.05, biome: montane,             continent: EU}
+  - {name: "Swiss Alps (Swiss National Park)", lon:   10.15, lat:  46.65, biome: montane,             continent: EU}
   - {name: "Andes (Peru)",                 lon:  -75.05, lat: -13.05, biome: montane,             continent: SA}
-  - {name: "Himalayas (Nepal)",            lon:   84.05, lat:  28.05, biome: montane,             continent: AS}
+  - {name: "Himalayas (Manang, Nepal)",    lon:   84.05, lat:  28.65, biome: montane,             continent: AS}
   - {name: "Rockies (Colorado)",           lon: -107.05, lat:  39.05, biome: montane,             continent: NA}
   - {name: "Atlas (Morocco)",              lon:   -5.05, lat:  32.05, biome: montane,             continent: AF}
 
@@ -164,16 +167,16 @@ bboxes:
   # TUNDRA (5)
   # ------------------------------------------------------------------------
   - {name: "Russian Arctic tundra",        lon:   75.05, lat:  71.05, biome: tundra,              continent: AS}
-  - {name: "NW Territories tundra",        lon: -122.05, lat:  67.05, biome: tundra,              continent: NA}
+  - {name: "Trail Valley Creek (NWT, CA)", lon: -133.45, lat:  68.75, biome: tundra,              continent: NA}
   - {name: "Alaska North Slope",           lon: -155.05, lat:  69.05, biome: tundra,              continent: NA}
   - {name: "Iceland interior",             lon:  -19.05, lat:  64.05, biome: tundra,              continent: EU}
-  - {name: "Siberian tundra (Yakutsk N)",  lon:  125.05, lat:  68.05, biome: tundra,              continent: AS}
+  - {name: "Indigirka lowland (Kytalyk, RU)", lon:  147.45, lat:  70.85, biome: tundra,              continent: AS}
 
   # ------------------------------------------------------------------------
   # COASTAL / WETLANDS (5)
   # ------------------------------------------------------------------------
-  - {name: "Bangladesh delta",             lon:   90.05, lat:  23.05, biome: wetland,             continent: AS}
-  - {name: "Florida Everglades",           lon:  -81.05, lat:  26.05, biome: wetland,             continent: NA}
+  - {name: "Sundarbans (Bangladesh)",      lon:   89.45, lat:  21.95, biome: wetland,             continent: AS}
+  - {name: "Florida Everglades (Shark River Slough)", lon:  -80.75, lat:  25.65, biome: wetland,             continent: NA}
   - {name: "Niger Delta",                  lon:    6.05, lat:   5.05, biome: wetland,             continent: AF}
   - {name: "Pantanal (Brazil)",            lon:  -56.05, lat: -17.05, biome: wetland,             continent: SA}
-  - {name: "Camargue (France)",            lon:    4.05, lat:  43.05, biome: wetland,             continent: EU}
+  - {name: "Camargue (France)",            lon:    4.45, lat:  43.55, biome: wetland,             continent: EU}
